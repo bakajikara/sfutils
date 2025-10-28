@@ -183,20 +183,21 @@ class SF2Parser:
 
             chunk = data[i:i + 38]
             name = chunk[0:20].decode("ascii", errors="ignore").rstrip("\x00")
-            preset, bank, bag_ndx = struct.unpack("<HHH", chunk[20:26])
 
             # ターミネータレコードはスキップ
             if name == "EOP":
                 break
 
+            values = struct.unpack("<HHHIII", chunk[20:38])
+
             headers.append({
                 "name": name,
-                "preset": preset,
-                "bank": bank,
-                "bag_ndx": bag_ndx,
-                "library": struct.unpack("<I", chunk[26:30])[0],
-                "genre": struct.unpack("<I", chunk[30:34])[0],
-                "morphology": struct.unpack("<I", chunk[34:38])[0]
+                "preset": values[0],
+                "bank": values[1],
+                "bag_ndx": values[2],
+                "library": values[3],
+                "genre": values[4],
+                "morphology": values[5]
             })
 
         return headers
@@ -420,45 +421,173 @@ class SF2Decompiler:
         # サンプルデータを16bit PCMとして解釈
         # 各サンプルは2バイト(int16)
 
+        # ステレオペアを検出するため、処理済みインデックスを記録
+        processed = set()
+        output_count = 0
+
+        # 重複チェック用: ファイル名 → 次に使う番号（1から開始）
+        filename_counts = {}
+        # サンプルID → 最終的なファイル名のマッピング（重要：instrumentで参照するため）
+        self.sample_id_to_filename = {}
+
         for idx, header in enumerate(sample_headers):
+            if idx in processed:
+                continue
+
             name = header["name"]
-            start = header["start"]  # サンプル単位
+            start = header["start"]
             end = header["end"]
+            sample_link = header["sample_link"]
+            sample_type = header["sample_type"]
 
-            # サンプルデータを抽出（バイト単位に変換）
-            pcm_bytes = sample_data[start * 2:end * 2]
+            # sample_type: 1=mono, 2=right, 4=left, 8=linked, 0x8000+N=ROM
+            is_stereo = sample_type in [2, 4] and sample_link < len(sample_headers)
 
-            # int16配列に変換
-            pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+            if is_stereo:
+                # ステレオペアとして処理
+                linked_header = sample_headers[sample_link]
 
-            # 元の順序を保持するため、ファイル名の先頭にインデックスを追加
-            sanitized_name = self._sanitize_filename(name)
-            base_filename = f"{idx:04d}_{sanitized_name}"
+                # 左右を判定
+                if sample_type == 4:  # 現在のサンプルが左
+                    left_header = header
+                    right_header = linked_header
+                    left_idx = idx
+                    right_idx = sample_link
+                else:  # 現在のサンプルが右
+                    left_header = linked_header
+                    right_header = header
+                    left_idx = sample_link
+                    right_idx = idx
 
-            flac_path = samples_dir / f"{base_filename}.flac"
-            json_path = samples_dir / f"{base_filename}.json"
+                # 左チャンネルのPCMデータ
+                left_pcm_bytes = sample_data[left_header["start"] * 2:left_header["end"] * 2]
+                left_pcm = np.frombuffer(left_pcm_bytes, dtype=np.int16)
 
-            # FLACファイルを書き込む（soundfileを使用）
-            sf.write(flac_path, pcm_array, header["sample_rate"], subtype="PCM_16")
+                # 右チャンネルのPCMデータ
+                right_pcm_bytes = sample_data[right_header["start"] * 2:right_header["end"] * 2]
+                right_pcm = np.frombuffer(right_pcm_bytes, dtype=np.int16)
 
-            # メタデータをJSONで保存（SF2仕様書のフィールド名を使用）
-            metadata = {
-                "sample_name": name,
-                "start": header["start"],
-                "end": header["end"],
-                "start_loop": header["start_loop"],
-                "end_loop": header["end_loop"],
-                "sample_rate": header["sample_rate"],
-                "original_key": header["original_key"],
-                "correction": header["correction"],
-                "sample_link": header["sample_link"],
-                "sample_type": header["sample_type"]
-            }
+                # 長さを揃える（短い方に合わせる）
+                min_len = min(len(left_pcm), len(right_pcm))
+                left_pcm = left_pcm[:min_len]
+                right_pcm = right_pcm[:min_len]
 
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
+                # ステレオ配列を作成 (samples, channels)
+                stereo_pcm = np.column_stack((left_pcm, right_pcm))
 
-        print(f"  Created: {len(sample_headers)} sample files in samples/")
+                # ファイル名の共通部分を抽出（(L)や(R)などを除去）
+                left_name = left_header["name"]
+                right_name = right_header["name"]
+                common_name = self._extract_common_name(left_name, right_name)
+                if not common_name:
+                    print(f"  WARNING: Could not extract common name for stereo pair: \"{left_name}\" / \"{right_name}\"")
+                    common_name = f"sample_{left_idx}_{right_idx}"
+
+                sanitized_name = self._sanitize_filename(common_name)
+
+                # 重複チェックと番号付与
+                if sanitized_name in filename_counts:
+                    # 2回目以降は番号を付ける（1から開始）
+                    count = filename_counts[sanitized_name]
+                    print(f"  WARNING: Duplicate sample name found: \"{common_name}\" (occurrence #{count + 1})")
+                    final_filename = f"{sanitized_name}_{count}"
+                    filename_counts[sanitized_name] += 1
+                else:
+                    # 最初の出現時は番号なし
+                    filename_counts[sanitized_name] = 1
+                    final_filename = sanitized_name
+
+                # サンプルID → ファイル名のマッピングを記録（ステレオは両方のIDで同じファイル名）
+                self.sample_id_to_filename[left_idx] = final_filename
+                self.sample_id_to_filename[right_idx] = final_filename
+
+                flac_path = samples_dir / f"{final_filename}.flac"
+                json_path = samples_dir / f"{final_filename}.json"
+                # 左右で開始終了位置やループ位置が異なる場合は警告
+                left_rel_start = left_header["start"] - left_header["start"]
+                left_rel_end = left_header["end"] - left_header["start"]
+                right_rel_start = right_header["start"] - right_header["start"]
+                right_rel_end = right_header["end"] - right_header["start"]
+                left_rel_start_loop = left_header["start_loop"] - left_header["start"]
+                left_rel_end_loop = left_header["end_loop"] - left_header["start"]
+                right_rel_start_loop = right_header["start_loop"] - right_header["start"]
+                right_rel_end_loop = right_header["end_loop"] - right_header["start"]
+
+                if (left_rel_start != right_rel_start or left_rel_end != right_rel_end or
+                        left_rel_start_loop != right_rel_start_loop or left_rel_end_loop != right_rel_end_loop):
+                    print(f"  WARNING: Stereo pair has different positions: {common_name}")
+                    print(f"    Left:  start={left_rel_start}, end={left_rel_end}, start_loop={left_rel_start_loop}, end_loop={left_rel_end_loop}")
+                    print(f"    Right: start={right_rel_start}, end={right_rel_end}, start_loop={right_rel_start_loop}, end_loop={right_rel_end_loop}")
+
+                # ステレオFLACファイルを書き込む
+                sf.write(flac_path, stereo_pcm, left_header["sample_rate"], subtype="PCM_16")
+                # メタデータをJSONで保存（相対位置として保存）
+                # 左右で開始位置やループが違うことはないので、左チャンネルの情報を使用
+                metadata = {
+                    "sample_name": final_filename,  # 番号付きファイル名を使用
+                    "sample_type": "stereo",
+                    "start": 0,
+                    "end": len(left_pcm),
+                    "start_loop": left_header["start_loop"] - left_header["start"],
+                    "end_loop": left_header["end_loop"] - left_header["start"],
+                    "original_key": left_header["original_key"],
+                    "correction": left_header["correction"]
+                }
+
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                processed.add(left_idx)
+                processed.add(right_idx)
+                output_count += 1
+
+            else:
+                # モノラルサンプルとして処理
+                pcm_bytes = sample_data[start * 2:end * 2]
+                pcm_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+
+                sanitized_name = self._sanitize_filename(name)
+
+                # 重複チェックと番号付与
+                if sanitized_name in filename_counts:
+                    # 2回目以降は番号を付ける（1から開始）
+                    count = filename_counts[sanitized_name]
+                    print(f"  WARNING: Duplicate sample name found: \"{name}\" (occurrence #{count + 1})")
+                    final_filename = f"{sanitized_name}_{count}"
+                    filename_counts[sanitized_name] += 1
+                else:
+                    # 最初の出現時は番号なし
+                    filename_counts[sanitized_name] = 1
+                    final_filename = sanitized_name
+
+                # サンプルID → ファイル名のマッピングを記録
+                self.sample_id_to_filename[idx] = final_filename
+
+                flac_path = samples_dir / f"{final_filename}.flac"
+                json_path = samples_dir / f"{final_filename}.json"
+
+                # メタデータをJSONで保存（相対位置として保存）
+                metadata = {
+                    "sample_name": final_filename,  # 番号付きファイル名を使用
+                    "sample_type": "mono",
+                    "start": 0,
+                    "end": len(pcm_array),
+                    "start_loop": header["start_loop"] - start,
+                    "end_loop": header["end_loop"] - start,
+                    "original_key": header["original_key"],
+                    "correction": header["correction"]
+                }
+
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                # モノラルFLACファイルを書き込む
+                sf.write(flac_path, pcm_array, header["sample_rate"], subtype="PCM_16")
+
+                processed.add(idx)
+                output_count += 1
+
+        print(f"  Created: {output_count} sample files in samples/")
 
     def _export_instruments(self):
         """instrumentsディレクトリにJSONファイルを出力"""
@@ -493,6 +622,7 @@ class SF2Decompiler:
 
                 # ジェネレータを解析
                 generators = {}
+                sample_channel = None
                 for gen_idx in range(gen_start, gen_end):
                     if gen_idx >= len(inst_gens):
                         break
@@ -508,13 +638,41 @@ class SF2Decompiler:
                         lo = gen["amount"] & 0xFF
                         hi = (gen["amount"] >> 8) & 0xFF
                         generators[gen_name] = f"{lo}-{hi}"
-                    elif gen["oper"] == 53:  # sampleID
+                    elif gen["oper"] == 53:  # sampleID → sample に名前変更
                         if gen["amount"] < len(sample_headers):
-                            # インデックス_サンプル名の形式で保存（重複名対策）
-                            sample_name = sample_headers[gen["amount"]]["name"]
-                            generators[gen_name] = f"{gen["amount"]:04d}_{sample_name}"
+                            sample_header = sample_headers[gen["amount"]]
+                            sample_name = sample_header["name"]
+                            sample_type = sample_header["sample_type"]
+                            sample_link = sample_header["sample_link"]
+
+                            # サンプルID → ファイル名のマッピングから取得（重複対応済み）
+                            if gen["amount"] in self.sample_id_to_filename:
+                                final_sample_name = self.sample_id_to_filename[gen["amount"]]
+                            else:
+                                # マッピングがない場合は通常通り処理（念のため）
+                                if sample_type in [2, 4] and sample_link < len(sample_headers):
+                                    linked_header = sample_headers[sample_link]
+                                    if sample_type == 4:  # left
+                                        common_name = self._extract_common_name(sample_name, linked_header["name"])
+                                    else:  # right (sample_type == 2)
+                                        common_name = self._extract_common_name(linked_header["name"], sample_name)
+                                    final_sample_name = self._sanitize_filename(common_name)
+                                else:
+                                    final_sample_name = self._sanitize_filename(sample_name)
+
+                            # ステレオの場合、チャンネル情報を保存
+                            if sample_type in [2, 4] and sample_link < len(sample_headers):
+                                if sample_type == 4:  # left
+                                    sample_channel = "left"
+                                else:  # right (sample_type == 2)
+                                    sample_channel = "right"
+                                generators["sample"] = final_sample_name
+                                generators["sample_channel"] = sample_channel
+                            else:
+                                # モノラルの場合
+                                generators["sample"] = final_sample_name
                         else:
-                            generators[gen_name] = gen["amount"]
+                            generators["sample"] = gen["amount"]
                     else:
                         generators[gen_name] = gen["amount"]
 
@@ -525,9 +683,8 @@ class SF2Decompiler:
                         break
                     modulators.append(inst_mods[mod_idx])
 
-                zone = {}
-
-                zone["generators"] = generators
+                # zoneを構築
+                zone = {"generators": generators}
 
                 if modulators:
                     zone["modulators"] = modulators
@@ -540,8 +697,8 @@ class SF2Decompiler:
                 "zones": zones
             }
 
-            # 元の順序を保持するため、ファイル名の先頭にインデックスを追加
-            filename = f"{idx:04d}_{self._sanitize_filename(inst["name"])}.json"
+            # ファイル名（indexは削除）
+            filename = f"{self._sanitize_filename(inst["name"])}.json"
             output_path = instruments_dir / filename
 
             with open(output_path, "w", encoding="utf-8") as f:
@@ -641,8 +798,8 @@ class SF2Decompiler:
                 "zones": zones
             }
 
-            # 元の順序を保持するため、ファイル名の先頭にインデックスを追加
-            filename = f"{idx:04d}_{preset["bank"]:03d}-{preset["preset"]:03d}_{self._sanitize_filename(preset["name"])}.json"
+            # ファイル名（bank-preset番号を残し、indexは削除）
+            filename = f"{preset["bank"]:03d}-{preset["preset"]:03d}_{self._sanitize_filename(preset["name"])}.json"
             output_path = presets_dir / filename
 
             with open(output_path, "w", encoding="utf-8") as f:
@@ -657,6 +814,26 @@ class SF2Decompiler:
         for char in invalid_chars:
             name = name.replace(char, "_")
         return name.strip()
+
+    def _extract_common_name(self, left_name, right_name):
+        """左右のサンプル名から共通部分を抽出"""
+
+        # 共通部分を探す（前方一致で最長一致を探す）
+        common = ""
+        for i, (lc, rc) in enumerate(zip(left_name, right_name)):
+            if lc == rc:
+                common += lc
+            else:
+                break
+
+        # 末尾の記号を除去
+        common = common.rstrip("_-( ")
+
+        # 何も見つからなければ左の名前を使う
+        if not common:
+            common = left_name
+
+        return common
 
 
 def main():

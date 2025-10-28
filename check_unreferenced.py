@@ -24,14 +24,14 @@ def load_json_file(filepath):
 
 def extract_sample_references(data, referenced_samples):
     """
-    JSON データから参照されているサンプルIDを抽出
-    instrumentsとpresetsで使われているsampleIDを収集
+    JSON データから参照されているサンプル名を抽出
+    instrumentsとpresetsで使われているsample名を収集
     """
     if isinstance(data, dict):
-        # sampleID フィールドを探す
-        if 'sampleID' in data:
-            sample_id = data['sampleID']
-            referenced_samples.add(sample_id)
+        # sample フィールドを探す（新フォーマット）
+        if 'sample' in data:
+            sample_name = data['sample']
+            referenced_samples.add(sample_name)
 
         # 再帰的に辞書内を探索
         for value in data.values():

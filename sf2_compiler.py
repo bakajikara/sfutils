@@ -71,17 +71,17 @@ class SF2Compiler:
         print(f"  Loaded: bank-info.json")
 
     def _load_samples(self):
-        """samplesディレクトリからサンプルメタデータを読み込む（高速化：PCMデータは後で読む）"""
+        """samplesディレクトリからサンプルメタデータを読み込む（高速化:PCMデータは後で読む）"""
         samples_dir = self.input_dir / "samples"
 
         if not samples_dir.exists():
             raise FileNotFoundError(f"samples directory not found in {self.input_dir}")
 
-        # JSONファイルを順番に読み込む（アルファベット順）
-        json_files = sorted(samples_dir.glob("*.json"))
+        # JSONファイルを読み込む
+        json_files = samples_dir.glob("*.json")
 
         for json_path in json_files:
-            # JSONからメタデータを読み込む（SF2仕様書のフィールド名）
+            # JSONからメタデータを読み込む
             with open(json_path, "r", encoding="utf-8") as f:
                 metadata = json.load(f)
 
@@ -96,33 +96,106 @@ class SF2Compiler:
             if audio_path is None:
                 raise FileNotFoundError(f"Audio file not found for: {json_path}")
 
-            # サンプルデータを構築（PCMデータはまだ読まない）
-            sample_data = {
-                "sample_name": metadata["sample_name"],
-                "start": metadata["start"],
-                "end": metadata["end"],
-                "start_loop": metadata["start_loop"],
-                "end_loop": metadata["end_loop"],
-                "sample_rate": metadata["sample_rate"],
-                "original_key": metadata["original_key"],
-                "correction": metadata["correction"],
-                "sample_link": metadata["sample_link"],
-                "sample_type": metadata["sample_type"],
-                "_audio_path": audio_path,  # PCMデータを読むためのパスを保存
-            }
+            sample_type = metadata.get("sample_type", "mono")
 
-            self.samples.append(sample_data)
+            if sample_type == "stereo":
+                # ステレオサンプル: 左右に分離して2つのサンプルとして登録
+                # 左右で開始位置やループは同じ
+                start = metadata.get("start", 0)
+                end = metadata.get("end", 0)
+                start_loop = metadata.get("start_loop", 0)
+                end_loop = metadata.get("end_loop", 0)
+                original_key = metadata.get("original_key", 60)
+                correction = metadata.get("correction", 0)
 
-        print(f"  Loaded: {len(self.samples)} sample files from samples/")
+                # 左チャンネル用サンプル
+                left_sample = {
+                    "sample_name": metadata["sample_name"],
+                    "start": start,
+                    "end": end,
+                    "start_loop": start_loop,
+                    "end_loop": end_loop,
+                    "original_key": original_key,
+                    "correction": correction,
+                    "sample_link": None,  # 後で設定
+                    "sample_type": 4,  # left
+                    "_audio_path": audio_path,
+                    "_channel": "left",
+                    "_is_stereo": True
+                }
 
-    def _read_pcm_data(self, audio_path):
-        """オーディオファイル（FLAC/WAV等）からPCMデータを読み込む（必要な時だけ呼ばれる）"""
+                # 右チャンネル用サンプル
+                right_sample = {
+                    "sample_name": metadata["sample_name"],
+                    "start": start,
+                    "end": end,
+                    "start_loop": start_loop,
+                    "end_loop": end_loop,
+                    "original_key": original_key,
+                    "correction": correction,
+                    "sample_link": None,  # 後で設定
+                    "sample_type": 2,  # right
+                    "_audio_path": audio_path,
+                    "_channel": "right",
+                    "_is_stereo": True
+                }
+
+                # 相互リンクを設定
+                left_idx = len(self.samples)
+                right_idx = left_idx + 1
+                left_sample["sample_link"] = right_idx
+                right_sample["sample_link"] = left_idx
+
+                self.samples.append(left_sample)
+                self.samples.append(right_sample)
+
+            else:
+                # モノラルサンプル
+                sample_data = {
+                    "sample_name": metadata["sample_name"],
+                    "start": metadata.get("start", 0),
+                    "end": metadata.get("end", 0),
+                    "start_loop": metadata.get("start_loop", 0),
+                    "end_loop": metadata.get("end_loop", 0),
+                    "original_key": metadata.get("original_key", 60),
+                    "correction": metadata.get("correction", 0),
+                    "sample_link": 0,
+                    "sample_type": 1,  # mono
+                    "_audio_path": audio_path,
+                    "_channel": None,
+                    "_is_stereo": False
+                }
+
+                self.samples.append(sample_data)
+
+        print(f"  Loaded: {len(self.samples)} sample entries from samples/")
+
+    def _read_pcm_data(self, audio_path, channel=None):
+        """オーディオファイル（FLAC/WAV等）からPCMデータを読み込む（必要な時だけ呼ばれる）
+
+        Args:
+            audio_path: オーディオファイルのパス
+            channel: "left", "right", またはNone(モノラル)
+        """
         try:
             # soundfileで読み込み（FLAC, WAV, OGG, AIFF等に対応）
             data, samplerate = sf.read(audio_path, dtype="int16")
 
+            # チャンネル分離
+            if channel == "left":
+                if len(data.shape) == 2:  # ステレオ
+                    data = data[:, 0]
+                # モノラルの場合はそのまま
+            elif channel == "right":
+                if len(data.shape) == 2:  # ステレオ
+                    data = data[:, 1]
+                # モノラルの場合はそのまま
+            else:
+                # モノラル、またはステレオをそのまま返す
+                pass
+
             # NumPy配列をバイト列に変換
-            return data.tobytes()
+            return data.tobytes(), samplerate
         except Exception as e:
             raise ValueError(f"Failed to read audio file {audio_path}: {e}")
 
@@ -133,8 +206,8 @@ class SF2Compiler:
         if not instruments_dir.exists():
             raise FileNotFoundError(f"instruments directory not found in {self.input_dir}")
 
-        # JSONファイルを順番に読み込む（ファイル名順）
-        json_files = sorted(instruments_dir.glob("*.json"))
+        # JSONファイルを読み込む
+        json_files = instruments_dir.glob("*.json")
 
         for json_path in json_files:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -150,8 +223,8 @@ class SF2Compiler:
         if not presets_dir.exists():
             raise FileNotFoundError(f"presets directory not found in {self.input_dir}")
 
-        # JSONファイルを順番に読み込む（ファイル名順）
-        json_files = sorted(presets_dir.glob("*.json"))
+        # JSONファイルを読み込む
+        json_files = presets_dir.glob("*.json")
 
         for json_path in json_files:
             with open(json_path, "r", encoding="utf-8") as f:
@@ -256,13 +329,31 @@ class SF2Compiler:
         smpl_start = f.tell()
 
         # サンプルデータを順次書き込み（メモリに全て読み込まない）
+        # 各サンプルの絶対位置を記録
         padding = b"\x00" * self.SAMPLE_PADDING * 2  # サンプル間のゼロパディング
+        current_offset = 0  # サンプル単位でのオフセット
 
         for sample in self.samples:
-            # PCMデータを必要な時だけ読み込む（高速化）
-            pcm = self._read_pcm_data(sample["_audio_path"])
+            # PCMデータを必要な時だけ読み込み、チャンネル情報を渡す
+            channel = sample.get("_channel")
+            pcm, sample_rate = self._read_pcm_data(sample["_audio_path"], channel)
+
+            # サンプル数を計算（int16なので2バイトで1サンプル）
+            num_samples = len(pcm) // 2
+
+            # 絶対位置を計算（相対位置 + 現在のオフセット）
+            sample["_absolute_start"] = current_offset + sample["start"]
+            sample["_absolute_end"] = current_offset + sample["end"]
+            sample["_absolute_start_loop"] = current_offset + sample["start_loop"]
+            sample["_absolute_end_loop"] = current_offset + sample["end_loop"]
+            sample["_sample_rate"] = sample_rate
+
+            # データを書き込む
             f.write(pcm)
             f.write(padding)
+
+            # 次のサンプルのオフセットを更新
+            current_offset += num_samples + self.SAMPLE_PADDING
 
         # サイズを計算して更新
         smpl_end = f.tell()
@@ -301,35 +392,36 @@ class SF2Compiler:
 
         shdr_data = []
 
-        # サンプルヘッダーを構築（SF2仕様書のフィールド名を使用）
-        # 最初のサンプルは0から開始
-        current_sample_offset = 0
+        # サンプルヘッダーを構築
+        for idx, sample in enumerate(self.samples):
+            # sample_nameを動的生成（左右のサフィックスを追加）
+            base_name = sample["sample_name"]
+            if sample.get("_is_stereo"):
+                channel = sample.get("_channel")
+                if channel == "left":
+                    name = f"{base_name}_L"[:19]
+                else:  # right
+                    name = f"{base_name}_R"[:19]
+            else:
+                name = base_name[:19]
 
-        for sample in self.samples:
-            # sample_name (20バイト)
-            name = sample["sample_name"][:20].ljust(20, "\x00").encode("ascii")
+            name_bytes = name.ljust(20, "\x00").encode("ascii")
 
-            # start, end (絶対位置)
-            # デコンパイル時の値をそのまま使用するのではなく、
-            # WAVファイルのサイズから再計算
-            pcm_size = (sample["end"] - sample["start"]) * 2  # バイト単位のサイズ
-            num_frames = pcm_size // 2  # サンプル数
-
-            start = current_sample_offset
-            end = start + num_frames
-
-            # start_loop, end_loop（相対位置→絶対位置）
-            start_loop = start + (sample["start_loop"] - sample["start"])
-            end_loop = start + (sample["end_loop"] - sample["start"])
+            # 絶対位置を使用（_write_sdta_chunk_directで計算済み）
+            start = sample.get("_absolute_start", 0)
+            end = sample.get("_absolute_end", 0)
+            start_loop = sample.get("_absolute_start_loop", 0)
+            end_loop = sample.get("_absolute_end_loop", 0)
+            sample_rate = sample.get("_sample_rate", 44100)
 
             shdr_record = struct.pack(
                 "<20sIIIIIBBHH",
-                name,
+                name_bytes,
                 start,
                 end,
                 start_loop,
                 end_loop,
-                sample["sample_rate"],
+                sample_rate,
                 sample["original_key"],
                 sample["correction"] & 0xFF,
                 sample["sample_link"],
@@ -338,27 +430,26 @@ class SF2Compiler:
 
             shdr_data.append(shdr_record)
 
-            # 次のサンプルのオフセット（パディング込み）
-            current_sample_offset = end + self.SAMPLE_PADDING  # パディングはサンプル数単位
-
         # ターミネータ（"EOS"）
         shdr_data.append(b"EOS".ljust(20, b"\x00") + b"\x00" * 26)
 
         # インストゥルメントを構築
-        # サンプル名→インデックスマッピング
-        # "0000_SampleName" 形式と "SampleName" 形式の両方をサポート
+        # サンプル名+チャンネル→インデックスマッピング
         sample_name_to_id = {}
         for i, s in enumerate(self.samples):
-            # sample_name単体
-            sample_name_to_id[s["sample_name"]] = i
-            # JSONファイル名から"0000_SampleName"形式も登録
-            # JSONファイル名は"0000_SampleName.json"なので、拡張子を除いたものがキー
-            # ただし、_audio_pathからファイル名を取得
-            json_stem = s["_audio_path"].stem  # "0000_SampleName"
-            sample_name_to_id[json_stem] = i
+            base_name = s["sample_name"]
+
+            # ベース名だけでもアクセス可能に（モノラルの場合）
+            if not s.get("_is_stereo"):
+                sample_name_to_id[base_name] = i
+
+            # チャンネル情報付きでもアクセス可能に（ステレオの場合）
+            channel = s.get("_channel")
+            if channel:
+                sample_name_to_id[(base_name, channel)] = i
 
         for inst in self.instruments:
-            name = inst["name"][:20].ljust(20, "\x00").encode("ascii")
+            name = inst["name"][:19].ljust(20, "\x00").encode("ascii")
             bag_ndx = len(ibag_data)
 
             inst_record = struct.pack("<20sH", name, bag_ndx)
@@ -401,7 +492,7 @@ class SF2Compiler:
 
                 # その他のジェネレータ
                 for gen_name, gen_value in generators.items():
-                    if gen_name in ["keyRange", "velRange", "sampleID"]:
+                    if gen_name in ["keyRange", "velRange", "sample"]:
                         continue
 
                     gen_id = GENERATOR_IDS.get(gen_name)
@@ -410,10 +501,19 @@ class SF2Compiler:
 
                     igen_data.append(struct.pack("<Hh", gen_id, gen_value))
 
-                # sampleIDを最後に配置
-                if "sampleID" in generators:
-                    sample_name = generators["sampleID"]
-                    sample_id = sample_name_to_id.get(sample_name, 0)
+                # sample (旧sampleID)を最後に配置
+                if "sample" in generators:
+                    sample_name = generators["sample"]
+                    sample_channel = generators.get("sample_channel")  # "left", "right", またはNone
+
+                    # サンプルIDを検索
+                    if sample_channel:
+                        # ステレオサンプルの場合、チャンネル情報を使用
+                        sample_id = sample_name_to_id.get((sample_name, sample_channel), 0)
+                    else:
+                        # モノラルサンプルの場合
+                        sample_id = sample_name_to_id.get(sample_name, 0)
+
                     igen_data.append(struct.pack("<Hh", 53, sample_id))
 
         # インストゥルメントのターミネータ
@@ -432,7 +532,7 @@ class SF2Compiler:
             inst_name_to_id[inst["name"]] = i
 
         for preset in self.presets:
-            name = preset["name"][:20].ljust(20, "\x00").encode("ascii")
+            name = preset["name"][:19].ljust(20, "\x00").encode("ascii")
             preset_num = preset["preset_number"]
             bank = preset["bank"]
             bag_ndx = len(pbag_data)
