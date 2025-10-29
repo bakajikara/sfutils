@@ -460,9 +460,9 @@ class SF2Compiler:
             base_name = sample["sample_name"]
             if sample.get("_is_stereo"):
                 channel = sample.get("_channel")
-                name = f"{base_name}_L"[:19] if channel == "left" else f"{base_name}_R"[:19]
+                name = f"{base_name}_L"[:20] if channel == "left" else f"{base_name}_R"[:20]
             else:
-                name = base_name[:19]
+                name = base_name[:20]
 
             name_bytes = name.ljust(20, "\x00").encode("ascii")
             # Use absolute positions calculated in _write_sdta_chunk_direct
@@ -531,7 +531,7 @@ class SF2Compiler:
                 sample_name_to_id[(base_name, channel)] = i
 
         for inst in self.instruments:
-            name = inst["name"][:19].ljust(20, "\x00").encode("ascii")
+            name = inst["name"][:20].ljust(20, "\x00").encode("ascii")
             bag_ndx = len(ibag_data)
             inst_record = struct.pack("<20sH", name, bag_ndx)
             inst_data.append(inst_record)
@@ -600,7 +600,7 @@ class SF2Compiler:
         inst_name_to_id = {inst["name"]: i for i, inst in enumerate(self.instruments)}
 
         for preset in self.presets:
-            name = preset["name"][:19].ljust(20, "\x00").encode("ascii")
+            name = preset["name"][:20].ljust(20, "\x00").encode("ascii")
             bag_ndx = len(pbag_data)
             phdr_record = struct.pack(
                 "<20sHHHIII",
