@@ -612,9 +612,6 @@ class SF2Decompiler:
             zone = {"generators": generators}
             if modulators:
                 zone["modulators"] = modulators
-            # Determine if it's a global zone
-            if "instrument" not in generators and gen_parser_func.__name__ == "<lambda>":
-                zone["is_global"] = True
             zones.append(zone)
         return zones
 
