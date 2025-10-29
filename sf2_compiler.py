@@ -14,6 +14,7 @@ import sys
 import json
 import struct
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import soundfile as sf
@@ -125,6 +126,7 @@ class SF2Compiler:
         # Load all parts
         self._load_bank_info()
         self._load_samples()
+        self._fix_stereo_links()  # Fix stereo sample links after loading
         self._load_instruments()
         self._load_presets()
 
@@ -133,6 +135,32 @@ class SF2Compiler:
         self._write_sf2_file()
 
         print("Compilation complete!")
+
+    def _fix_stereo_links(self):
+        """
+        Fixes stereo sample links after parallel loading.
+        Stereo pairs need to reference each other by index.
+        """
+        # Group stereo samples by audio path and name
+        stereo_groups = {}
+        for idx, sample in enumerate(self.samples):
+            if sample.get("_is_stereo"):
+                key = (sample["_audio_path"], sample["sample_name"])
+                if key not in stereo_groups:
+                    stereo_groups[key] = []
+                stereo_groups[key].append(idx)
+
+        # Set mutual links for each stereo pair
+        for indices in stereo_groups.values():
+            if len(indices) == 2:
+                left_idx, right_idx = indices[0], indices[1]
+                # Determine which is left and which is right
+                if self.samples[left_idx]["_channel"] == "left":
+                    self.samples[left_idx]["sample_link"] = right_idx
+                    self.samples[right_idx]["sample_link"] = left_idx
+                else:
+                    self.samples[left_idx]["sample_link"] = right_idx
+                    self.samples[right_idx]["sample_link"] = left_idx
 
     def _load_bank_info(self):
         """
@@ -161,37 +189,77 @@ class SF2Compiler:
         # Load JSON files
         json_files = sorted(samples_dir.glob("*.json"))  # sorted for consistent order
 
-        for json_path in json_files:
-            # Load metadata from JSON
-            with open(json_path, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
+        total_files = len(json_files)
+        print(f"  Loading {total_files} sample metadata files...")
 
-            # Find the corresponding audio file path (FLAC, WAV, etc.)
-            audio_path = None
-            for ext in [".flac", ".wav", ".ogg", ".aiff", ".aif"]:
-                candidate = json_path.with_suffix(ext)
-                if candidate.exists():
-                    audio_path = candidate
-                    break
+        # Process in parallel with progress display, preserving order
+        sample_entries = []
+        with ThreadPoolExecutor() as executor:
+            # Submit all tasks and map futures to their index
+            future_to_index = {
+                executor.submit(self._load_sample_metadata, json_path): idx
+                for idx, json_path in enumerate(json_files)
+            }
 
-            if audio_path is None:
-                raise FileNotFoundError(f"Audio file not found for: {json_path}")
+            # Collect results with their original indices
+            results_with_index = []
+            for completed, future in enumerate(as_completed(future_to_index), 1):
+                try:
+                    entries = future.result()
+                    idx = future_to_index[future]
+                    results_with_index.append((idx, entries))
 
-            sample_type = metadata.get("sample_type", "mono")
+                    # Show progress inline
+                    progress = (completed / total_files) * 100
+                    print(f"    Progress: {completed}/{total_files} ({progress:.1f}%)", end="\r")
+                except Exception as e:
+                    idx = future_to_index[future]
+                    print(f"\n  ERROR loading {json_files[idx]}: {e}")
 
-            if sample_type == "stereo":
-                self._load_stereo_sample(metadata, audio_path)
-            else:
-                self._load_mono_sample(metadata, audio_path)
+            print()  # Newline after progress
+
+            # Sort by original index to preserve order
+            results_with_index.sort(key=lambda x: x[0])
+            for _, entries in results_with_index:
+                sample_entries.extend(entries)
+
+        # Add samples in the order they were loaded
+        self.samples = sample_entries
 
         print(f"  Loaded: {len(self.samples)} sample entries from samples/")
 
-    def _load_stereo_sample(self, metadata, audio_path):
+    def _load_sample_metadata(self, json_path):
         """
-        Loads a stereo sample, creating separate left and right sample entries.
+        Loads metadata for a single sample (or stereo pair).
+        Returns a list of sample entries (1 for mono, 2 for stereo).
+        """
+        # Load metadata from JSON
+        with open(json_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        # Find the corresponding audio file path (FLAC, WAV, etc.)
+        audio_path = None
+        for ext in [".flac", ".wav", ".ogg", ".aiff", ".aif"]:
+            candidate = json_path.with_suffix(ext)
+            if candidate.exists():
+                audio_path = candidate
+                break
+
+        if audio_path is None:
+            raise FileNotFoundError(f"Audio file not found for: {json_path}")
+
+        sample_type = metadata.get("sample_type", "mono")
+
+        if sample_type == "stereo":
+            return self._create_stereo_sample_entries(metadata, audio_path)
+        else:
+            return [self._create_mono_sample_entry(metadata, audio_path)]
+
+    def _create_stereo_sample_entries(self, metadata, audio_path):
+        """
+        Creates stereo sample entries (left and right).
         """
         # Stereo sample: split into two samples
-        # Start and loop positions are the same for both
         start = metadata.get("start", 0)
         end = metadata.get("end", 0)
         start_loop = metadata.get("start_loop", 0)
@@ -208,7 +276,7 @@ class SF2Compiler:
             "end_loop": end_loop,
             "original_key": original_key,
             "correction": correction,
-            "sample_link": None,
+            "sample_link": None,  # Will be set later
             "sample_type": 4,
             "_audio_path": audio_path,
             "_channel": "left",
@@ -224,28 +292,21 @@ class SF2Compiler:
             "end_loop": end_loop,
             "original_key": original_key,
             "correction": correction,
-            "sample_link": None,
+            "sample_link": None,  # Will be set later
             "sample_type": 2,
             "_audio_path": audio_path,
             "_channel": "right",
             "_is_stereo": True
         }
 
-        # Set mutual links
-        left_idx = len(self.samples)
-        right_idx = left_idx + 1
-        left_sample["sample_link"] = right_idx
-        right_sample["sample_link"] = left_idx
+        # Note: sample_link indices will be fixed after all samples are collected
+        return [left_sample, right_sample]
 
-        self.samples.append(left_sample)
-        self.samples.append(right_sample)
-
-    def _load_mono_sample(self, metadata, audio_path):
+    def _create_mono_sample_entry(self, metadata, audio_path):
         """
-        Loads a mono sample.
+        Creates a mono sample entry.
         """
-        # Mono sample
-        sample_data = {
+        return {
             "sample_name": metadata["sample_name"],
             "start": metadata.get("start", 0),
             "end": metadata.get("end", 0),
@@ -259,8 +320,6 @@ class SF2Compiler:
             "_channel": None,
             "_is_stereo": False
         }
-
-        self.samples.append(sample_data)
 
     def _read_pcm_data(self, audio_path, channel=None):
         """
@@ -297,11 +356,33 @@ class SF2Compiler:
             raise FileNotFoundError(f"instruments directory not found in {self.input_dir}")
 
         json_files = sorted(instruments_dir.glob("*.json"))
+        total_files = len(json_files)
 
-        for json_path in json_files:
-            with open(json_path, "r", encoding="utf-8") as f:
-                inst_data = json.load(f)
-                self.instruments.append(inst_data)
+        # Process in parallel with progress display, preserving order
+        with ThreadPoolExecutor() as executor:
+            # Submit all tasks and map futures to their index
+            future_to_index = {
+                executor.submit(self._load_json_file, json_path): idx
+                for idx, json_path in enumerate(json_files)
+            }
+
+            # Collect results with their original indices
+            results_with_index = []
+            for completed, future in enumerate(as_completed(future_to_index), 1):
+                try:
+                    data = future.result()
+                    idx = future_to_index[future]
+                    results_with_index.append((idx, data))
+
+                    # Show progress inline
+                    progress = (completed / total_files) * 100
+                except Exception as e:
+                    idx = future_to_index[future]
+                    print(f"  ERROR loading {json_files[idx]}: {e}")
+
+            # Sort by original index to preserve order
+            results_with_index.sort(key=lambda x: x[0])
+            self.instruments = [data for _, data in results_with_index]
 
         print(f"  Loaded: {len(self.instruments)} instrument files from instruments/")
 
@@ -315,13 +396,42 @@ class SF2Compiler:
             raise FileNotFoundError(f"presets directory not found in {self.input_dir}")
 
         json_files = sorted(presets_dir.glob("*.json"))
+        total_files = len(json_files)
 
-        for json_path in json_files:
-            with open(json_path, "r", encoding="utf-8") as f:
-                preset_data = json.load(f)
-                self.presets.append(preset_data)
+        # Process in parallel with progress display, preserving order
+        with ThreadPoolExecutor() as executor:
+            # Submit all tasks and map futures to their index
+            future_to_index = {
+                executor.submit(self._load_json_file, json_path): idx
+                for idx, json_path in enumerate(json_files)
+            }
+
+            # Collect results with their original indices
+            results_with_index = []
+            for completed, future in enumerate(as_completed(future_to_index), 1):
+                try:
+                    data = future.result()
+                    idx = future_to_index[future]
+                    results_with_index.append((idx, data))
+
+                    # Show progress inline
+                    progress = (completed / total_files) * 100
+                except Exception as e:
+                    idx = future_to_index[future]
+                    print(f"  ERROR loading {json_files[idx]}: {e}")
+
+            # Sort by original index to preserve order
+            results_with_index.sort(key=lambda x: x[0])
+            self.presets = [data for _, data in results_with_index]
 
         print(f"  Loaded: {len(self.presets)} preset files from presets/")
+
+    def _load_json_file(self, json_path):
+        """
+        Loads a single JSON file.
+        """
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     def _write_sf2_file(self):
         """
@@ -404,11 +514,14 @@ class SF2Compiler:
 
         smpl_start = f.tell()
 
-        # Write sample data sequentially (don't load all into memory)
+        # Write sample data sequentially with progress display
         padding = b"\x00" * self.SAMPLE_PADDING * 2
         current_offset = 0
+        total_samples = len(self.samples)
 
-        for sample in self.samples:
+        print(f"  Writing {total_samples} samples to SF2...")
+
+        for idx, sample in enumerate(self.samples, 1):
             # Read PCM data only when needed, passing channel info
             channel = sample.get("_channel")
             pcm, sample_rate = self._read_pcm_data(sample["_audio_path"], channel)
@@ -427,6 +540,12 @@ class SF2Compiler:
 
             # Update offset for the next sample
             current_offset += num_samples + self.SAMPLE_PADDING
+
+            # Show progress inline
+            progress = (idx / total_samples) * 100
+            print(f"    Progress: {idx}/{total_samples} ({progress:.1f}%)", end="\r")
+
+        print()  # Newline after progress
 
         # Calculate and update sizes
         smpl_end = f.tell()

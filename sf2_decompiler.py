@@ -14,6 +14,7 @@ import sys
 import json
 import struct
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import soundfile as sf
@@ -21,7 +22,11 @@ except ImportError:
     print("Error: soundfile library is required. Install it with: pip install soundfile")
     sys.exit(1)
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    print("Error: numpy library is required. Install it with: pip install numpy")
+    sys.exit(1)
 
 from sf2_constants import GENERATOR_NAMES
 
@@ -416,9 +421,27 @@ class SF2Decompiler:
 
         sample_headers = self.parser.get_sample_headers()
         sample_data = self.parser.sample_data
-        # Keep track of processed indices to detect stereo pairs
-        processed, filename_counts = set(), {}
-        output_count = 0
+
+        # Prepare tasks for parallel processing
+        tasks = self._prepare_sample_tasks(sample_headers)
+
+        # Process tasks in parallel
+        results = self._process_sample_tasks_parallel(tasks, samples_dir, sample_data, sample_headers)
+
+        # Update filename mappings
+        for result in results:
+            self.sample_id_to_filename.update(result["id_mapping"])
+
+        print(f"  Created: {len(results)} sample files in samples/")
+
+    def _prepare_sample_tasks(self, sample_headers):
+        """
+        Prepares tasks for parallel sample processing.
+        Detects stereo pairs and generates unique filenames.
+        """
+        tasks = []
+        processed = set()
+        filename_counts = {}
 
         for idx, header in enumerate(sample_headers):
             if idx in processed or not any(header.values()):
@@ -429,23 +452,142 @@ class SF2Decompiler:
             is_stereo = sample_type in [2, 4] and sample_link < len(sample_headers)
 
             if is_stereo:
-                # Process as a stereo pair
-                output_count += self._export_stereo_sample(idx, header, samples_dir, sample_headers, sample_data, filename_counts, processed)
+                # Prepare stereo task
+                linked_idx = header["sample_link"]
+                linked_header = sample_headers[linked_idx]
+                left_h, right_h = (header, linked_header) if header["sample_type"] == 4 else (linked_header, header)
+
+                # Determine base filename
+                common_name = self._extract_common_name(left_h["name"], right_h["name"]) or f"sample_{idx}_{linked_idx}"
+                base_filename = sanitize_filename(common_name)
+
+                # Make filename unique
+                if base_filename in filename_counts:
+                    count = filename_counts[base_filename]
+                    filename_counts[base_filename] += 1
+                    final_filename = f"{base_filename}_{count}"
+                    original_name = base_filename
+                else:
+                    filename_counts[base_filename] = 1
+                    final_filename = base_filename
+                    original_name = None
+
+                tasks.append({
+                    "type": "stereo",
+                    "idx": idx,
+                    "header": header,
+                    "linked_idx": linked_idx,
+                    "linked_header": linked_header,
+                    "filename": final_filename,
+                    "original_name": original_name
+                })
+                processed.add(idx)
+                processed.add(linked_idx)
             else:
-                # Process as a mono sample
-                output_count += self._export_mono_sample(idx, header, samples_dir, sample_data, filename_counts)
-            processed.add(idx)
+                # Prepare mono task
+                base_filename = sanitize_filename(header["name"])
 
-        print(f"  Created: {output_count} sample files in samples/")
+                # Make filename unique
+                if base_filename in filename_counts:
+                    count = filename_counts[base_filename]
+                    filename_counts[base_filename] += 1
+                    final_filename = f"{base_filename}_{count}"
+                    original_name = base_filename
+                else:
+                    filename_counts[base_filename] = 1
+                    final_filename = base_filename
+                    original_name = None
 
-    def _export_stereo_sample(self, idx, header, samples_dir, sample_headers, sample_data, filename_counts, processed):
+                tasks.append({
+                    "type": "mono",
+                    "idx": idx,
+                    "header": header,
+                    "filename": final_filename,
+                    "original_name": original_name
+                })
+                processed.add(idx)
+
+        return tasks
+
+    def _process_sample_tasks_parallel(self, tasks, samples_dir, sample_data, sample_headers):
         """
-        Exports a stereo sample.
+        Processes sample tasks in parallel with progress display.
         """
-        linked_idx = header["sample_link"]
-        linked_header = sample_headers[linked_idx]
+        total_tasks = len(tasks)
+        print(f"  Processing {total_tasks} samples...")
+
+        # Show warnings for duplicates
+        for task in tasks:
+            if task.get("original_name"):
+                print(f"    WARNING: Duplicate sample name found. Original: \"{task['original_name']}\"")
+                print(f"      -> Renaming to: \"{task['filename']}\"")
+
+        results = []
+        with ThreadPoolExecutor() as executor:
+            # Submit all tasks
+            future_to_task = {
+                executor.submit(
+                    self._process_sample_task,
+                    task,
+                    samples_dir,
+                    sample_data,
+                    sample_headers
+                ): task for task in tasks
+            }
+
+            # Process completed tasks with progress
+            for completed, future in enumerate(as_completed(future_to_task), 1):
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+
+                        # Show progress inline
+                        progress = (completed / total_tasks) * 100
+                        print(f"    Progress: {completed}/{total_tasks} ({progress:.1f}%)", end="\r")
+                except Exception as e:
+                    task = future_to_task[future]
+                    print(f"\n  ERROR processing sample {task.get('idx', 'unknown')}: {e}")
+
+            # Print newline after progress is complete
+            print()
+
+        return results
+
+    def _process_sample_task(self, task, samples_dir, sample_data, sample_headers):
+        """
+        Processes a single sample task (mono or stereo).
+        Returns a dict with filename and id_mapping.
+        """
+        if task["type"] == "stereo":
+            return self._process_stereo_sample(
+                task["idx"],
+                task["header"],
+                task["linked_idx"],
+                task["linked_header"],
+                task["filename"],
+                samples_dir,
+                sample_data
+            )
+        else:
+            return self._process_mono_sample(
+                task["idx"],
+                task["header"],
+                task["filename"],
+                samples_dir,
+                sample_data
+            )
+
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+        """
+        Processes a stereo sample (thread-safe version).
+        """
         # Determine left and right channels
-        left_h, right_h, left_idx, right_idx = (header, linked_header, idx, linked_idx) if header["sample_type"] == 4 else (linked_header, header, linked_idx, idx)
+        left_h, right_h, left_idx, right_idx = (
+            (header, linked_header, idx, linked_idx)
+            if header["sample_type"] == 4
+            else (linked_header, header, linked_idx, idx)
+        )
 
         # Left channel PCM data
         left_pcm = np.frombuffer(sample_data[left_h["start"] * 2:left_h["end"] * 2], dtype=np.int16)
@@ -456,36 +598,37 @@ class SF2Decompiler:
         # Create stereo array (samples, channels)
         stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
 
-        # Extract common part of the filename (remove "L" and "R" suffixes if present)
-        common_name = self._extract_common_name(left_h["name"], right_h["name"]) or f"sample_{left_idx}_{right_idx}"
-        # Check for duplicates and add a number if necessary
-        final_filename = self._get_unique_filename(common_name, filename_counts)
-        # Map sample ID to final filename (important for instrument references)
-        self.sample_id_to_filename[left_idx] = self.sample_id_to_filename[right_idx] = final_filename
+        # Use the provided unique filename
+        final_filename = filename
 
         # Write stereo FLAC file
         sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_16")
         # Save metadata to JSON (as relative positions)
         self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "stereo", len(left_pcm), left_h)
 
-        processed.add(linked_idx)
-        return 1
+        return {
+            "filename": final_filename,
+            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
+        }
 
-    def _export_mono_sample(self, idx, header, samples_dir, sample_data, filename_counts):
+    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
         """
-        Exports a mono sample.
+        Processes a mono sample (thread-safe version).
         """
         pcm_array = np.frombuffer(sample_data[header["start"] * 2:header["end"] * 2], dtype=np.int16)
-        # Check for duplicates and add a number if necessary
-        final_filename = self._get_unique_filename(header["name"], filename_counts)
-        # Map sample ID to final filename
-        self.sample_id_to_filename[idx] = final_filename
+
+        # Use the provided unique filename
+        final_filename = filename
 
         # Write mono FLAC file
         sf.write(samples_dir / f"{final_filename}.flac", pcm_array, header["sample_rate"], subtype="PCM_16")
         # Save metadata to JSON (as relative positions)
         self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", len(pcm_array), header)
-        return 1
+
+        return {
+            "filename": final_filename,
+            "id_mapping": {idx: final_filename}
+        }
 
     def _write_sample_metadata(self, path, name, type, length, header):
         """
@@ -503,20 +646,6 @@ class SF2Decompiler:
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
-
-    def _get_unique_filename(self, name, counts):
-        """
-        Generates a unique filename to avoid duplicates.
-        """
-        sanitized = sanitize_filename(name)
-        if sanitized in counts:
-            count = counts[sanitized]
-            counts[sanitized] += 1
-            print(f"  WARNING: Duplicate sample name found. Original: \"{name}\"")
-            print(f"    -> Renaming to: \"{sanitized}_{count}\"")
-            return f"{sanitized}_{count}"
-        counts[sanitized] = 1
-        return sanitized
 
     def _export_instruments(self):
         """
