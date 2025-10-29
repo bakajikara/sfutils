@@ -434,6 +434,10 @@ class SF2Decompiler:
             if idx in processed:
                 continue
 
+            # 値が空のときはスキップ
+            if not any(header.values()):
+                continue
+
             name = header["name"]
             start = header["start"]
             end = header["end"]
@@ -697,6 +701,10 @@ class SF2Decompiler:
                 "zones": zones
             }
 
+            # 値が空のときはスキップ
+            if not any(inst_data.values()):
+                continue
+
             # ファイル名（indexは削除）
             filename = f"{self._sanitize_filename(inst["name"])}.json"
             output_path = instruments_dir / filename
@@ -797,6 +805,10 @@ class SF2Decompiler:
                 "morphology": preset["morphology"],
                 "zones": zones
             }
+
+            # 値が空のときはスキップ
+            if not any(preset_data.values()):
+                continue
 
             # ファイル名（bank-preset番号を残し、indexは削除）
             filename = f"{preset["bank"]:03d}-{preset["preset"]:03d}_{self._sanitize_filename(preset["name"])}.json"
