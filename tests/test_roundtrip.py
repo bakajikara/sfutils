@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-ラウンドトリップテスト - SF2ファイルの完全性を検証
+Roundtrip Test - Verify integrity of an SF2 file
 
-MuseScore_General_HQ.sf2をデコンパイル→コンパイルして、
-バイナリレベルで完全一致することを確認します。
+Decompile → compile MuseScore_General_HQ.sf2 and confirm the binary is
+identical.
 
-完全一致しない場合は、実用上の等価性を検証します。
-等価性チェックでは以下を無視します:
-- サンプル、インストゥルメント、プリセットの順序
-- 内部的なサンプル名などの名称の微差
-- 順序の違いによるID/offset値の差異
+If not identical, verify practical equivalence.
+Equivalence checks ignore the following:
+- Order of samples, instruments, and presets
+- Minor differences in internal sample names and other labels
+- Differences in IDs/offsets caused by ordering
 """
 
 import sys
@@ -22,7 +22,7 @@ from test_equivalence import SF2EquivalenceChecker
 
 
 def calculate_md5(filepath):
-    """ファイルのMD5ハッシュを計算"""
+    """Calculate the MD5 hash of a file"""
     hash_md5 = hashlib.md5()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
@@ -31,7 +31,7 @@ def calculate_md5(filepath):
 
 
 def calculate_sha256(filepath):
-    """ファイルのSHA256ハッシュを計算"""
+    """Calculate the SHA256 hash of a file"""
     hash_sha256 = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
@@ -44,31 +44,31 @@ def main():
     print("SF2 Roundtrip Test - MuseScore_General_HQ.sf2")
     print("=" * 80)
 
-    # ファイルパス設定
+    # Set file paths
     original_sf2 = Path("MuseScore_General_HQ.sf2")
     temp_dir = Path("temp_roundtrip_test")
     rebuilt_sf2 = Path("temp_rebuilt.sf2")
 
-    # オリジナルファイルの存在確認
+    # Check that the original file exists
     if not original_sf2.exists():
-        print(f"❌ Error: {original_sf2} が見つかりません")
+        print(f"❌ Error: {original_sf2} not found")
         sys.exit(1)
 
     print(f"\n📁 Original file: {original_sf2}")
     print(f"   Size: {original_sf2.stat().st_size:,} bytes")
 
     try:
-        # Step 1: デコンパイル
-        print(f"\n🔓 Step 1: デコンパイル中 → {temp_dir}")
+        # Step 1: Decompile
+        print(f"\n🔓 Step 1: Decompiling to → {temp_dir}")
         if temp_dir.exists():
-            print(f"   既存のディレクトリを削除中...")
+            print(f"   Removing existing directory...")
             shutil.rmtree(temp_dir)
 
         decompiler = SF2Decompiler(str(original_sf2), str(temp_dir))
         decompiler.decompile()
-        print(f"   ✓ デコンパイル完了")
+        print(f"   ✓ Decompile complete")
 
-        # デコンパイルされたファイル数を表示
+        # Show number of decompiled files
         samples = list((temp_dir / "samples").glob("*.wav"))
         instruments = list((temp_dir / "instruments").glob("*.json"))
         presets = list((temp_dir / "presets").glob("*.json"))
@@ -76,86 +76,86 @@ def main():
         print(f"   - Instruments: {len(instruments)}")
         print(f"   - Presets: {len(presets)}")
 
-        # Step 2: コンパイル
-        print(f"\n🔒 Step 2: コンパイル中 → {rebuilt_sf2}")
+        # Step 2: Compile
+        print(f"\n🔒 Step 2: Compiling to → {rebuilt_sf2}")
         if rebuilt_sf2.exists():
-            print(f"   既存のファイルを削除中...")
+            print(f"   Removing existing file...")
             rebuilt_sf2.unlink()
 
         compiler = SF2Compiler(str(temp_dir), str(rebuilt_sf2))
         compiler.compile()
-        print(f"   ✓ コンパイル完了")
+        print(f"   ✓ Compile complete")
         print(f"   Size: {rebuilt_sf2.stat().st_size:,} bytes")
 
-        # Step 3: バイナリ完全一致チェック
-        print(f"\n🔬 Step 3: バイナリ完全一致チェック中...")
+        # Step 3: Binary exact-match check
+        print(f"\n🔬 Step 3: Binary exact-match check...")
 
         original_md5 = calculate_md5(original_sf2)
         rebuilt_md5 = calculate_md5(rebuilt_sf2)
 
-        print(f"   MD5ハッシュ:")
+        print(f"   MD5 hashes:")
         print(f"   - Original: {original_md5}")
         print(f"   - Rebuilt:  {rebuilt_md5}")
 
         is_identical = (original_md5 == rebuilt_md5)
 
         if is_identical:
-            print(f"   ✅ 完全一致！")
+            print(f"   ✅ Exact match!")
         else:
-            print(f"   ❌ バイナリレベルでは不一致")
+            print(f"   ❌ Not identical at the binary level")
 
-        # Step 4: 等価性チェック（完全一致しなかった場合のみ）
+        # Step 4: Equivalence check (only if not exactly identical)
         is_equivalent = False
         if not is_identical:
-            print(f"\n🔍 Step 4: 等価性チェック中...")
-            print(f"   （バイナリ完全一致しなかったため、実用上の等価性を検証します）")
+            print(f"\n🔍 Step 4: Equivalence check...")
+            print(f"   (Binary exact match failed; checking for practical equivalence)")
             print()
 
             checker = SF2EquivalenceChecker(str(original_sf2), str(rebuilt_sf2))
             is_equivalent = checker.check()
         else:
-            print(f"\n✨ バイナリ完全一致のため、等価性チェックはスキップします")
+            print(f"\n✨ Binary exact match; skipping equivalence check")
             is_equivalent = True
 
-        # 最終結果
+        # Final result
         print("\n" + "=" * 80)
         if is_identical:
-            print("🎉 テスト成功！完全可逆変換が確認されました！")
-            print("   （バイナリレベルで完全一致）")
+            print("🎉 Test passed! Full reversible conversion confirmed!")
+            print("   (Binary-level exact match)")
             print("=" * 80)
             success = True
         elif is_equivalent:
-            print("✅ テスト成功！等価なSF2ファイルが生成されました")
-            print("   （バイナリは異なるが、実用上は等価）")
+            print("✅ Test passed! An equivalent SF2 file was produced")
+            print("   (Different binary but practically equivalent)")
             print("=" * 80)
             success = True
         else:
-            print("❌ テスト失敗：等価性の問題が検出されました")
+            print("❌ Test failed: Equivalence issues detected")
             print("=" * 80)
             success = False
 
-        # クリーンアップするか確認
-        print(f"\n🧹 クリーンアップ:")
-        print(f"   一時ファイル: {temp_dir}, {rebuilt_sf2}")
+        # Ask whether to clean up
+        print(f"\n🧹 Cleanup:")
+        print(f"   Temporary files: {temp_dir}, {rebuilt_sf2}")
 
         if success:
-            response = input("   一時ファイルを削除しますか? [Y/n]: ").strip().lower()
+            response = input("   Delete temporary files? [Y/n]: ").strip().lower()
             if response in ['', 'y', 'yes']:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
-                    print(f"   ✓ {temp_dir} を削除しました")
+                    print(f"   ✓ Removed {temp_dir}")
                 if rebuilt_sf2.exists():
                     rebuilt_sf2.unlink()
-                    print(f"   ✓ {rebuilt_sf2} を削除しました")
+                    print(f"   ✓ Removed {rebuilt_sf2}")
             else:
-                print(f"   一時ファイルを保持します")
+                print(f"   Keeping temporary files")
         else:
-            print(f"   テスト失敗のため、一時ファイルを保持します（デバッグ用）")
+            print(f"   Test failed; keeping temporary files for debugging")
 
         sys.exit(0 if success else 1)
 
     except Exception as e:
-        print(f"\n❌ エラーが発生しました: {e}")
+        print(f"\n❌ An error occurred: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
