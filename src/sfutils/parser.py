@@ -1,6 +1,8 @@
 
 import struct
 
+from sfutils.constants import GENERATOR_NAMES
+
 
 def read_chunk_header(f):
     """
@@ -42,6 +44,17 @@ class SF2Parser:
         self.sample_data = b""
         self.sample_data_24 = b""
         self.pdta = {}
+
+        # Caching for parsed data
+        self._preset_headers = None
+        self._instrument_headers = None
+        self._sample_headers = None
+        self._preset_bags = None
+        self._instrument_bags = None
+        self._preset_generators = None
+        self._instrument_generators = None
+        self._preset_modulators = None
+        self._instrument_modulators = None
 
     def parse(self):
         """
@@ -200,6 +213,9 @@ class SF2Parser:
         """
         Gets preset headers.
         """
+        if self._preset_headers is not None:
+            return self._preset_headers
+
         # sfPresetHeader = 38 bytes
         records = self._get_pdta_records("phdr", 38, b"EOP")
         headers = []
@@ -215,12 +231,16 @@ class SF2Parser:
                 "genre": values[4],
                 "morphology": values[5]
             })
-        return headers
+        self._preset_headers = headers
+        return self._preset_headers
 
     def get_instrument_headers(self):
         """
         Gets instrument headers.
         """
+        if self._instrument_headers is not None:
+            return self._instrument_headers
+
         # sfInst = 22 bytes
         records = self._get_pdta_records("inst", 22, b"EOI")
         headers = []
@@ -228,12 +248,16 @@ class SF2Parser:
             name = r[0:20].decode("ascii", errors="ignore").rstrip("\x00")
             bag_ndx = struct.unpack("<H", r[20:22])[0]
             headers.append({"name": name, "bag_ndx": bag_ndx})
-        return headers
+        self._instrument_headers = headers
+        return self._instrument_headers
 
     def get_sample_headers(self):
         """
         Gets sample headers.
         """
+        if self._sample_headers is not None:
+            return self._sample_headers
+
         # sfSample = 46 bytes
         records = self._get_pdta_records("shdr", 46, b"EOS")
         headers = []
@@ -252,7 +276,20 @@ class SF2Parser:
                 "sample_link": values[7],
                 "sample_type": values[8]
             })
-        return headers
+        self._sample_headers = headers
+        return self._sample_headers
+
+    def get_preset_bags(self):
+        if self._preset_bags is not None:
+            return self._preset_bags
+        self._preset_bags = self._get_bags("pbag")
+        return self._preset_bags
+
+    def get_instrument_bags(self):
+        if self._instrument_bags is not None:
+            return self._instrument_bags
+        self._instrument_bags = self._get_bags("ibag")
+        return self._instrument_bags
 
     def _get_bags(self, chunk_name):
         """
@@ -268,11 +305,17 @@ class SF2Parser:
             bags.append({"gen_ndx": gen_ndx, "mod_ndx": mod_ndx})
         return bags
 
-    def get_preset_bags(self):
-        return self._get_bags("pbag")
+    def get_preset_generators(self):
+        if self._preset_generators is not None:
+            return self._preset_generators
+        self._preset_generators = self._get_generators("pgen")
+        return self._preset_generators
 
-    def get_instrument_bags(self):
-        return self._get_bags("ibag")
+    def get_instrument_generators(self):
+        if self._instrument_generators is not None:
+            return self._instrument_generators
+        self._instrument_generators = self._get_generators("igen")
+        return self._instrument_generators
 
     def _get_generators(self, chunk_name):
         """
@@ -288,11 +331,17 @@ class SF2Parser:
             generators.append({"oper": oper, "amount": amount})
         return generators
 
-    def get_preset_generators(self):
-        return self._get_generators("pgen")
+    def get_preset_modulators(self):
+        if self._preset_modulators is not None:
+            return self._preset_modulators
+        self._preset_modulators = self._get_modulators("pmod")
+        return self._preset_modulators
 
-    def get_instrument_generators(self):
-        return self._get_generators("igen")
+    def get_instrument_modulators(self):
+        if self._instrument_modulators is not None:
+            return self._instrument_modulators
+        self._instrument_modulators = self._get_modulators("imod")
+        return self._instrument_modulators
 
     def _get_modulators(self, chunk_name):
         """
@@ -314,8 +363,55 @@ class SF2Parser:
             })
         return modulators
 
-    def get_preset_modulators(self):
-        return self._get_modulators("pmod")
+    def get_preset_zones(self, preset_idx):
+        """
+        Gets all zones for a given preset index, with raw generator/modulator data.
+        """
+        return self._get_zones(
+            header_idx=preset_idx,
+            headers=self.get_preset_headers(),
+            bags=self.get_preset_bags(),
+            mods=self.get_preset_modulators(),
+            gens=self.get_preset_generators()
+        )
 
-    def get_instrument_modulators(self):
-        return self._get_modulators("imod")
+    def get_instrument_zones(self, inst_idx):
+        """
+        Gets all zones for a given instrument index, with raw generator/modulator data.
+        """
+        return self._get_zones(
+            header_idx=inst_idx,
+            headers=self.get_instrument_headers(),
+            bags=self.get_instrument_bags(),
+            mods=self.get_instrument_modulators(),
+            gens=self.get_instrument_generators()
+        )
+
+    def _get_zones(self, header_idx, headers, bags, gens, mods):
+        """
+        Gets zones for an instrument or preset, returning raw generator and modulator records.
+        """
+        # Determine the bag range for the given header index
+        bag_start = headers[header_idx]["bag_ndx"]
+        is_last_header = (header_idx + 1) >= len(headers)
+        bag_end = len(bags) - 1 if is_last_header else headers[header_idx + 1]["bag_ndx"]
+
+        zones = []
+        for bag_idx in range(bag_start, bag_end):
+            if bag_idx >= len(bags):
+                break
+            bag = bags[bag_idx]
+
+            # Determine the generator and modulator ranges
+            gen_start, mod_start = bag["gen_ndx"], bag["mod_ndx"]
+            is_last_bag = (bag_idx + 1) >= len(bags)
+            gen_end = len(gens) if is_last_bag else bags[bag_idx + 1]["gen_ndx"]
+            mod_end = len(mods) if is_last_bag else bags[bag_idx + 1]["mod_ndx"]
+
+            # Extract raw generator and modulator records
+            generators = gens[gen_start:gen_end]
+            modulators = mods[mod_start:mod_end]
+
+            zone = {"generators": generators, "modulators": modulators}
+            zones.append(zone)
+        return zones

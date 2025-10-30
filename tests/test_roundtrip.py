@@ -69,7 +69,7 @@ def main():
         print(f"   ✓ Decompile complete")
 
         # Show number of decompiled files
-        samples = list((temp_dir / "samples").glob("*.wav"))
+        samples = list((temp_dir / "samples").glob("*.json"))
         instruments = list((temp_dir / "instruments").glob("*.json"))
         presets = list((temp_dir / "presets").glob("*.json"))
         print(f"   - Samples: {len(samples)}")
@@ -140,7 +140,7 @@ def main():
 
         if success:
             response = input("   Delete temporary files? [Y/n]: ").strip().lower()
-            if response in ['', 'y', 'yes']:
+            if response in ["", "y", "yes"]:
                 if temp_dir.exists():
                     shutil.rmtree(temp_dir)
                     print(f"   ✓ Removed {temp_dir}")

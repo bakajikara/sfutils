@@ -200,8 +200,8 @@ class SF2Decompiler:
         # Show warnings for duplicates
         for task in tasks:
             if task.get("original_name"):
-                print(f"    WARNING: Duplicate sample name found. Original: \"{task['original_name']}\"")
-                print(f"      -> Renaming to: \"{task['filename']}\"")
+                print(f"    WARNING: Duplicate sample name found. Original: \"{task["original_name"]}\"")
+                print(f"      -> Renaming to: \"{task["filename"]}\"")
 
         results = []
         with ThreadPoolExecutor() as executor:
@@ -228,7 +228,7 @@ class SF2Decompiler:
                         print(f"    Progress: {completed}/{total_tasks} ({progress:.1f}%)", end="\r")
                 except Exception as e:
                     task = future_to_task[future]
-                    print(f"\n  ERROR processing sample {task.get('idx', 'unknown')}: {e}")
+                    print(f"\n  ERROR processing sample {task.get("idx", "unknown")}: {e}")
 
             # Print newline after progress is complete
             print()
@@ -335,27 +335,25 @@ class SF2Decompiler:
         instruments_dir = self.output_dir / "instruments"
         instruments_dir.mkdir(exist_ok=True)
         inst_headers = self.parser.get_instrument_headers()
-        inst_bags = self.parser.get_instrument_bags()
-        inst_gens = self.parser.get_instrument_generators()
-        inst_mods = self.parser.get_instrument_modulators()
         sample_headers = self.parser.get_sample_headers()
         for idx, inst in enumerate(inst_headers):
             if not any(inst.values()):
                 continue
-            # Get zone range for this instrument
-            zones = self._get_zones(
-                idx,
-                inst_headers,
-                inst_bags,
-                inst_gens,
-                inst_mods,
-                lambda gens: self._parse_instrument_generators(gens, sample_headers)
-            )
+
+            raw_zones = self.parser.get_instrument_zones(idx)
+            translated_zones = []
+            for zone in raw_zones:
+                translated_zone = {
+                    "generators": self._translate_instrument_generators(zone["generators"], sample_headers)
+                }
+                if zone["modulators"]:
+                    translated_zone["modulators"] = zone["modulators"]
+                translated_zones.append(translated_zone)
+
             inst_data = {
                 "name": inst["name"],
-                "zones": zones
+                "zones": translated_zones
             }
-            # Filename (remove index)
             filename = f"{sanitize_filename(inst["name"])}.json"
             with open(instruments_dir / filename, "w", encoding="utf-8") as f:
                 json.dump(inst_data, f, indent=2, ensure_ascii=False)
@@ -368,22 +366,21 @@ class SF2Decompiler:
         presets_dir = self.output_dir / "presets"
         presets_dir.mkdir(exist_ok=True)
         preset_headers = self.parser.get_preset_headers()
-        preset_bags = self.parser.get_preset_bags()
-        preset_gens = self.parser.get_preset_generators()
-        preset_mods = self.parser.get_preset_modulators()
         inst_headers = self.parser.get_instrument_headers()
         for idx, preset in enumerate(preset_headers):
             if not any(preset.values()):
                 continue
-            # Get zone range for this preset
-            zones = self._get_zones(
-                idx,
-                preset_headers,
-                preset_bags,
-                preset_gens,
-                preset_mods,
-                lambda gens: self._parse_preset_generators(gens, inst_headers)
-            )
+
+            raw_zones = self.parser.get_preset_zones(idx)
+            translated_zones = []
+            for zone in raw_zones:
+                translated_zone = {
+                    "generators": self._translate_preset_generators(zone["generators"], inst_headers)
+                }
+                if zone["modulators"]:
+                    translated_zone["modulators"] = zone["modulators"]
+                translated_zones.append(translated_zone)
+
             preset_data = {
                 "name": preset["name"],
                 "bank": preset["bank"],
@@ -391,43 +388,24 @@ class SF2Decompiler:
                 "library": preset["library"],
                 "genre": preset["genre"],
                 "morphology": preset["morphology"],
-                "zones": zones
+                "zones": translated_zones
             }
-            # Filename (keep bank-preset number, remove index)
             filename = f"{preset["bank"]:03d}-{preset["preset"]:03d}_{sanitize_filename(preset["name"])}.json"
             with open(presets_dir / filename, "w", encoding="utf-8") as f:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
         print(f"  Created: {len(preset_headers)} preset files in presets/")
 
-    def _get_zones(self, header_idx, headers, bags, gens, mods, gen_parser_func):
+    def _translate_instrument_generators(self, gen_records, sample_headers):
         """
-        Gets zones for an instrument or preset.
-        """
-        bag_start = headers[header_idx]["bag_ndx"]
-        bag_end = headers[header_idx + 1]["bag_ndx"] if header_idx + 1 < len(headers) else len(bags) - 1
-        zones = []
-        for bag_idx in range(bag_start, bag_end):
-            if bag_idx >= len(bags):
-                break
-            bag = bags[bag_idx]
-            # Get generator and modulator ranges
-            gen_start, mod_start = bag["gen_ndx"], bag["mod_ndx"]
-            gen_end = bags[bag_idx + 1]["gen_ndx"] if bag_idx + 1 < len(bags) else len(gens)
-            mod_end = bags[bag_idx + 1]["mod_ndx"] if bag_idx + 1 < len(bags) else len(mods)
+        Translate instrument generator records into a dict mapping generator names
+        to meaningful values.
 
-            # Parse generators
-            generators = gen_parser_func(gens[gen_start:gen_end])
-            # Parse modulators
-            modulators = mods[mod_start:mod_end]
-            zone = {"generators": generators}
-            if modulators:
-                zone["modulators"] = modulators
-            zones.append(zone)
-        return zones
-
-    def _parse_instrument_generators(self, gen_records, sample_headers):
-        """
-        Parses instrument generators.
+        Special handling:
+        - sampleID (oper 53): maps sample index to the exported sample filename
+          and records stereo channel info ("left"/"right") when applicable.
+        - keyRange / velRange (oper 43 / 44): converts the 16-bit range value
+          into a "lo-hi" string.
+        - Unknown generator ops are returned using a "unknown_<oper>" name.
         """
         generators = {}
         for gen in gen_records:
@@ -453,9 +431,15 @@ class SF2Decompiler:
                 generators[gen_name] = amount
         return generators
 
-    def _parse_preset_generators(self, gen_records, inst_headers):
+    def _translate_preset_generators(self, gen_records, inst_headers):
         """
-        Parses preset generators.
+        Translate preset generator records into a dict mapping generator names
+        to meaningful values.
+
+        Special handling:
+        - instrument (oper 41): map instrument index to instrument name when available.
+        - keyRange / velRange (oper 43 / 44): convert 16-bit range value into "lo-hi" string.
+        - Unknown generator ops are returned using a "unknown_<oper>" key.
         """
         generators = {}
         for gen in gen_records:
@@ -463,7 +447,7 @@ class SF2Decompiler:
             amount = gen["amount"]
             # Special handling
             if gen["oper"] == 41:  # instrument
-                # Use instrument name
+                # Use instrument name if index is valid
                 generators[gen_name] = inst_headers[amount]["name"] if amount < len(inst_headers) else amount
             elif gen["oper"] in [43, 44]:  # keyRange, velRange
                 lo = amount & 0xFF

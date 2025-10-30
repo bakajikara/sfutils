@@ -80,7 +80,7 @@ class SF2EquivalenceChecker:
             return False
         else:
             print("\n✅ Files are equivalent!")
-            print("   (順序や内部名称の違いを除く)")
+            print("   (no practical differences detected)")
             return True
 
     def _parse_sf2(self, filepath):
