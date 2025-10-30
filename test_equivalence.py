@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 """
-SF2等価性テスト - 2つのSF2ファイルが実用上等価であることを検証
+SF2 equivalence test - verify two SF2 files are practically equivalent
 
-このテストは以下を無視します:
-- サンプル、インストゥルメント、プリセットの順序
-- 内部的なサンプル名などの名称の微差
-- 順序の違いによるID/offset値の差異
+This test ignores:
+- Order of samples, instruments, presets
+- Minor differences in internal sample/instrument names
+- Differences in IDs/offsets due to ordering
 
-以下は検出します:
-- 外向き（ユーザーに見える）のプリセット名などの違い
-- 参照関係の不整合（順序が違っても参照先が正しいか確認）
-- オーディオデータの違い
-- ジェネレータやモジュレータの設定値の違い
+This test detects:
+- Differences in outward-facing (user-visible) preset names, etc.
+- Inconsistencies in references (checks correctness even if order differs)
+- Differences in audio data
+- Differences in generator/modulator parameter values
 """
 
 import sys
 import struct
-import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
 
 class SF2EquivalenceChecker:
-    """2つのSF2ファイルの実用的な等価性をチェック"""
+    """Check practical equivalence of two SF2 files"""
 
     def __init__(self, file1_path, file2_path):
         self.file1_path = Path(file1_path)
@@ -31,7 +30,7 @@ class SF2EquivalenceChecker:
         self.warnings = []
 
     def check(self):
-        """等価性チェックを実行"""
+        """Run the equivalence check"""
         print("=" * 80)
         print("SF2 Equivalence Test")
         print("=" * 80)
@@ -39,7 +38,7 @@ class SF2EquivalenceChecker:
         print(f"File 2: {self.file2_path}")
         print()
 
-        # 両ファイルをパース
+        # Parse both files
         print("Parsing files...")
         data1 = self._parse_sf2(self.file1_path)
         data2 = self._parse_sf2(self.file2_path)
@@ -52,7 +51,7 @@ class SF2EquivalenceChecker:
         print(f"  File 2: {len(data2["samples"])} samples, {len(data2["instruments"])} instruments, {len(data2["presets"])} presets")
         print()
 
-        # 各要素をチェック
+        # Check each element
         print("Checking equivalence...")
         print()
 
@@ -61,7 +60,7 @@ class SF2EquivalenceChecker:
         self._check_instruments(data1["instruments"], data2["instruments"], data1["samples"], data2["samples"])
         self._check_presets(data1["presets"], data2["presets"], data1["instruments"], data2["instruments"])
 
-        # 結果表示
+        # Display results
         print()
         print("=" * 80)
         print("RESULTS")
@@ -85,10 +84,10 @@ class SF2EquivalenceChecker:
             return True
 
     def _parse_sf2(self, filepath):
-        """SF2ファイルをパース"""
+        """Parse an SF2 file"""
         try:
             with open(filepath, "rb") as f:
-                # RIFFヘッダー
+                # RIFF header
                 riff_id = f.read(4)
                 if riff_id != b"RIFF":
                     self.errors.append(f"{filepath}: Not a RIFF file")
@@ -100,7 +99,7 @@ class SF2EquivalenceChecker:
                     self.errors.append(f"{filepath}: Not a SoundFont file")
                     return None
 
-                # データ構造
+                # Data structure
                 data = {
                     "info": {},
                     "sample_data": b"",
@@ -110,7 +109,7 @@ class SF2EquivalenceChecker:
                     "pdta_raw": {}
                 }
 
-                # 3つのメインチャンクを読む
+                # Read the three main chunks
                 for _ in range(3):
                     chunk_id = f.read(4)
                     if len(chunk_id) < 4:
@@ -128,7 +127,7 @@ class SF2EquivalenceChecker:
 
                     f.seek(chunk_end)
 
-                # pdtaデータを構造化
+                # Structure pdta data
                 self._structure_pdta(data)
 
                 return data
@@ -138,7 +137,7 @@ class SF2EquivalenceChecker:
             return None
 
     def _parse_info_chunk(self, f, chunk_end):
-        """INFOチャンクをパース"""
+        """Parse the INFO chunk"""
         info = {}
         while f.tell() < chunk_end:
             sub_id = f.read(4)
@@ -163,7 +162,7 @@ class SF2EquivalenceChecker:
         return info
 
     def _parse_sdta_chunk(self, f, chunk_end):
-        """sdtaチャンクをパース（サンプルデータ）"""
+        """Parse the sdta chunk (sample data)"""
         sample_data = b""
         while f.tell() < chunk_end:
             sub_id = f.read(4)
@@ -182,7 +181,7 @@ class SF2EquivalenceChecker:
         return sample_data
 
     def _parse_pdta_chunk(self, f, chunk_end):
-        """pdtaチャンクをパース"""
+        """Parse the pdta chunk"""
         pdta = {}
         while f.tell() < chunk_end:
             sub_id = f.read(4)
@@ -199,10 +198,10 @@ class SF2EquivalenceChecker:
         return pdta
 
     def _structure_pdta(self, data):
-        """pdtaの生データを構造化"""
+        """Structure raw pdta data"""
         pdta = data["pdta_raw"]
 
-        # サンプルヘッダー
+        # Sample headers
         shdr_data = pdta.get("shdr", b"")
         for i in range(0, len(shdr_data), 46):
             if i + 46 > len(shdr_data):
@@ -226,7 +225,7 @@ class SF2EquivalenceChecker:
                 "sample_type": values[8]
             })
 
-        # インストゥルメントヘッダーとバッグ
+        # Instrument headers and bags
         inst_data = pdta.get("inst", b"")
         ibag_data = pdta.get("ibag", b"")
         igen_data = pdta.get("igen", b"")
@@ -269,7 +268,7 @@ class SF2EquivalenceChecker:
                 "trans_oper": values[4]
             })
 
-        # インストゥルメント構造化
+        # Structure instruments
         for idx, header in enumerate(inst_headers):
             bag_start = header["bag_ndx"]
             bag_end = inst_headers[idx + 1]["bag_ndx"] if idx + 1 < len(inst_headers) else len(ibags) - 1
@@ -299,7 +298,7 @@ class SF2EquivalenceChecker:
                 "zones": zones
             })
 
-        # プリセットヘッダーとバッグ
+        # Preset headers and bags
         phdr_data = pdta.get("phdr", b"")
         pbag_data = pdta.get("pbag", b"")
         pgen_data = pdta.get("pgen", b"")
@@ -352,7 +351,7 @@ class SF2EquivalenceChecker:
                 "trans_oper": values[4]
             })
 
-        # プリセット構造化
+        # Structure presets
         for idx, header in enumerate(preset_headers):
             bag_start = header["bag_ndx"]
             bag_end = preset_headers[idx + 1]["bag_ndx"] if idx + 1 < len(preset_headers) else len(pbags) - 1
@@ -388,10 +387,10 @@ class SF2EquivalenceChecker:
             })
 
     def _check_info(self, info1, info2):
-        """INFOチャンクの比較（外向き情報のみ）"""
+        """Compare INFO chunk (only outward-facing information)"""
         print("Checking INFO (metadata)...")
 
-        # 外向き情報（ユーザーに見える）
+        # External information (user-visible)
         external_keys = ["bank_name", "version"]
 
         for key in external_keys:
@@ -400,48 +399,48 @@ class SF2EquivalenceChecker:
             if val1 != val2:
                 self.errors.append(f"INFO.{key}: \"{val1}\" != \"{val2}\"")
 
-        # その他の情報は警告のみ
+        # Other info only as warnings
         internal_keys = ["sound_engine", "copyright"]
         for key in internal_keys:
             val1 = info1.get(key, "")
             val2 = info2.get(key, "")
             if val1 != val2:
-                self.warnings.append(f"INFO.{key}: \"{val1}\" != \"{val2}\" (内部情報の違い)")
+                self.warnings.append(f"INFO.{key}: \"{val1}\" != \"{val2}\" (internal info differs)")
 
         print("  ✓ INFO check complete")
 
     def _check_samples(self, samples1, samples2, data1, data2):
-        """サンプルの比較（順序を無視）"""
+        """Check samples (ignore order)"""
         print("Checking samples...")
 
         if len(samples1) != len(samples2):
             self.errors.append(f"Sample count mismatch: {len(samples1)} != {len(samples2)}")
 
-        # サンプルをオーディオデータでマッピング（順序を無視）
+        # Map samples by audio data (ignore order)
         def extract_sample_data(sample, data):
-            """サンプルのPCMデータを抽出"""
+            """Extract PCM data for a sample"""
             start = sample["start"] * 2  # 16-bit = 2 bytes
             end = sample["end"] * 2
             if end > len(data):
                 end = len(data)
             return data[start:end]
 
-        # ファイル1のサンプルをPCMデータでインデックス化
+        # Index file1 samples by PCM data
         import hashlib
         samples1_by_audio = {}
-        samples1_hashes = {}  # idx -> hash（後で使う）
+        samples1_hashes = {}  # idx -> hash (used later)
 
         for idx, sample in enumerate(samples1):
             pcm = extract_sample_data(sample, data1)
-            # ハッシュを使う（メモリ効率）
+            # Use a hash for memory efficiency
             pcm_hash = hashlib.md5(pcm).hexdigest()
             samples1_by_audio[pcm_hash] = (idx, sample, pcm)
             samples1_hashes[idx] = pcm_hash
 
-        # ファイル2の各サンプルをマッチング
+        # Match each sample in file2
         matched = set()
         sample_mapping = {}  # file2_idx -> file1_idx
-        samples2_hashes = {}  # idx -> hash（後で使う）
+        samples2_hashes = {}  # idx -> hash (used later)
 
         for idx2, sample2 in enumerate(samples2):
             pcm2 = extract_sample_data(sample2, data2)
@@ -453,7 +452,7 @@ class SF2EquivalenceChecker:
                 matched.add(idx1)
                 sample_mapping[idx2] = idx1
 
-                # メタデータ比較（名前以外）
+                # Compare metadata (excluding name)
                 if sample1["sample_rate"] != sample2["sample_rate"]:
                     self.errors.append(f"Sample #{idx2}: sample_rate mismatch")
                 if sample1["original_key"] != sample2["original_key"]:
@@ -463,7 +462,7 @@ class SF2EquivalenceChecker:
                 if sample1["sample_type"] != sample2["sample_type"]:
                     self.errors.append(f"Sample #{idx2}: sample_type mismatch")
 
-                # ループポイントの比較（オーディオデータ内での相対位置）
+                # Compare loop points (relative positions within the audio data)
                 loop1_start_rel = sample1["start_loop"] - sample1["start"]
                 loop1_end_rel = sample1["end_loop"] - sample1["start"]
                 loop2_start_rel = sample2["start_loop"] - sample2["start"]
@@ -475,39 +474,39 @@ class SF2EquivalenceChecker:
             else:
                 self.errors.append(f"Sample #{idx2} in file2 not found in file1")
 
-        # 未マッチのサンプル確認
+        # Check for unmatched samples
         for idx1 in range(len(samples1)):
             if idx1 not in matched:
                 self.errors.append(f"Sample #{idx1} in file1 not found in file2")
 
         print(f"  ✓ {len(matched)}/{len(samples1)} samples matched")
 
-        # マッピングとハッシュを保存（後で使う）
+        # Save mappings and hashes (for later use)
         self.sample_mapping = sample_mapping
         self.samples1_hashes = samples1_hashes
         self.samples2_hashes = samples2_hashes
 
     def _check_instruments(self, instruments1, instruments2, samples1, samples2):
-        """インストゥルメントの比較（順序を無視）"""
+        """Compare instruments (ignore order)"""
         print("Checking instruments...")
 
         if len(instruments1) != len(instruments2):
             self.errors.append(f"Instrument count mismatch: {len(instruments1)} != {len(instruments2)}")
 
-        # インストゥルメントを内容でマッピング
+        # Map instruments by content
         def inst_signature(inst, sample_hashes):
-            """インストゥルメントの署名を生成（名前を除く）"""
+            """Generate instrument signature (excluding name)"""
             sig = []
             for zone in inst["zones"]:
                 zone_gens = []
                 zone_mods = []
 
                 for gen in zone["generators"]:
-                    # sampleID (oper=53) の場合、サンプルの実際のPCMハッシュを使用
+                    # For sampleID (oper=53), use the sample's actual PCM hash
                     if gen["oper"] == 53:  # sampleID
                         sample_idx = gen["amount"]
                         if sample_idx in sample_hashes:
-                            # サンプルのハッシュ値を使って一意に識別
+                            # Use the sample hash value to uniquely identify
                             zone_gens.append((53, sample_hashes[sample_idx]))
                         else:
                             zone_gens.append((53, f"invalid_{sample_idx}"))
@@ -517,12 +516,12 @@ class SF2EquivalenceChecker:
                 for mod in zone["modulators"]:
                     zone_mods.append((mod["src_oper"], mod["dest_oper"], mod["amount"], mod["amt_src_oper"], mod["trans_oper"]))
 
-                # ジェネレータとモジュレータを別々にソートしてから結合
+                # Sort generators and modulators separately, then combine
                 sig.append((tuple(sorted(zone_gens)), tuple(sorted(zone_mods))))
 
             return tuple(sorted(sig))
 
-        # ファイル1のインストゥルメントをインデックス化
+        # Index instruments of file1
         inst1_by_sig = {}
         for idx, inst in enumerate(instruments1):
             sig = inst_signature(inst, self.samples1_hashes)
@@ -530,7 +529,7 @@ class SF2EquivalenceChecker:
                 inst1_by_sig[sig] = []
             inst1_by_sig[sig].append((idx, inst))
 
-        # ファイル2の各インストゥルメントをマッチング
+        # Match each instrument in file2
         matched = set()
         inst_mapping = {}  # file2_idx -> file1_idx
 
@@ -542,14 +541,14 @@ class SF2EquivalenceChecker:
                 matched.add(idx1)
                 inst_mapping[idx2] = idx1
 
-                # 名前の違いは警告のみ（内部名称）
+                # Name differences are only warnings (internal names)
                 if inst1["name"] != inst2["name"]:
                     self.warnings.append(f"Instrument name differs: \"{inst1["name"]}\" vs \"{inst2["name"]}\" (内部名称)")
 
             else:
                 self.errors.append(f"Instrument #{idx2} \"{inst2["name"]}\" in file2 not found in file1")
 
-        # 未マッチのインストゥルメント確認
+        # Check for unmatched instruments
         for sig, remaining in inst1_by_sig.items():
             for idx1, inst1 in remaining:
                 if idx1 not in matched:
@@ -557,19 +556,19 @@ class SF2EquivalenceChecker:
 
         print(f"  ✓ {len(matched)}/{len(instruments1)} instruments matched")
 
-        # マッピングを保存
+        # Save instrument mapping
         self.inst_mapping = inst_mapping
 
     def _check_presets(self, presets1, presets2, instruments1, instruments2):
-        """プリセットの比較（順序を無視）"""
+        """Compare presets (ignore order)"""
         print("Checking presets...")
 
         if len(presets1) != len(presets2):
             self.errors.append(f"Preset count mismatch: {len(presets1)} != {len(presets2)}")
 
-        # プリセットをbank/preset番号でグループ化
+        # Group presets by bank/preset numbers
         def group_by_bank_preset(presets):
-            """bank/preset番号でグループ化"""
+            """Group by bank/preset numbers"""
             grouped = defaultdict(list)
             for preset in presets:
                 key = (preset["bank"], preset["preset"])
@@ -579,7 +578,7 @@ class SF2EquivalenceChecker:
         presets1_grouped = group_by_bank_preset(presets1)
         presets2_grouped = group_by_bank_preset(presets2)
 
-        # bank/preset番号の一致を確認
+        # Verify bank/preset number sets match
         keys1 = set(presets1_grouped.keys())
         keys2 = set(presets2_grouped.keys())
 
@@ -591,7 +590,7 @@ class SF2EquivalenceChecker:
             if missing_in_1:
                 self.errors.append(f"Preset bank/preset numbers in file2 but not in file1: {missing_in_1}")
 
-        # 各bank/preset番号内でプリセットを比較
+        # Compare presets within each bank/preset number
         matched_count = 0
         for key in keys1 & keys2:
             bank, preset = key
@@ -602,13 +601,13 @@ class SF2EquivalenceChecker:
                 self.errors.append(f"Preset count mismatch for bank={bank}, preset={preset}: {len(list1)} != {len(list2)}")
                 continue
 
-            # 各プリセットを比較
+            # Compare each preset
             for p1, p2 in zip(list1, list2):
-                # 名前は外向き情報なので厳密にチェック
+                # Names are outward-facing info, check strictly
                 if p1["name"] != p2["name"]:
                     self.errors.append(f"Preset name mismatch for bank={bank}, preset={preset}: \"{p1["name"]}\" != \"{p2["name"]}\"")
 
-                # その他のメタデータ
+                # Other metadata
                 if p1["library"] != p2["library"]:
                     self.warnings.append(f"Preset library differs for \"{p1["name"]}\": {p1["library"]} != {p2["library"]}")
                 if p1["genre"] != p2["genre"]:
@@ -616,24 +615,24 @@ class SF2EquivalenceChecker:
                 if p1["morphology"] != p2["morphology"]:
                     self.warnings.append(f"Preset morphology differs for \"{p1["name"]}\": {p1["morphology"]} != {p2["morphology"]}")
 
-                # ゾーンの比較
+                # Compare zones
                 if len(p1["zones"]) != len(p2["zones"]):
                     self.errors.append(f"Zone count mismatch for preset \"{p1["name"]}\": {len(p1["zones"])} != {len(p2["zones"])}")
                     continue
 
                 for z_idx, (z1, z2) in enumerate(zip(p1["zones"], p2["zones"])):
-                    # ジェネレータの比較
+                    # Compare generators
                     gens1 = sorted([(g["oper"], g["amount"]) for g in z1["generators"]])
                     gens2 = sorted([(g["oper"], g["amount"]) for g in z2["generators"]])
 
-                    # instrument (oper=41) の場合、インストゥルメントマッピングを考慮
+                    # For instrument (oper=41), consider instrument mapping
                     gens1_normalized = []
                     for oper, amount in gens1:
                         if oper == 41:  # instrument
-                            # インストゥルメントの内容で比較（IDではなく）
+                            # Compare by instrument content (not ID)
                             if 0 <= amount < len(instruments1):
                                 inst = instruments1[amount]
-                                gens1_normalized.append((41, inst["name"]))  # 仮に名前で識別
+                                gens1_normalized.append((41, inst["name"]))  # use name as a stand-in identifier
                             else:
                                 gens1_normalized.append((41, amount))
                         else:
@@ -653,7 +652,7 @@ class SF2EquivalenceChecker:
                     if gens1_normalized != gens2_normalized:
                         self.errors.append(f"Generator mismatch in preset \"{p1["name"]}\" zone {z_idx}")
 
-                    # モジュレータの比較
+                    # Compare modulators
                     mods1 = sorted([(m["src_oper"], m["dest_oper"], m["amount"], m["amt_src_oper"], m["trans_oper"]) for m in z1["modulators"]])
                     mods2 = sorted([(m["src_oper"], m["dest_oper"], m["amount"], m["amt_src_oper"], m["trans_oper"]) for m in z2["modulators"]])
 
