@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-SF2 Constants - SoundFont2ファイルで使用する共通定数定義
+SF2 Constants - Common constant definitions used in SoundFont2 files
 
-コンパイラとデコンパイラの両方で使用される定数を定義します。
+Defines constants used by both the compiler and the decompiler.
 """
 
-# ジェネレータ名からIDへのマッピング
+# Mapping from generator name to ID
 # SF2 2.04 spec section 8.1.2 - Generator Enumerators
 GENERATOR_IDS = {
     "startAddrsOffset": 0,
@@ -71,16 +71,5 @@ GENERATOR_IDS = {
     "endOper": 60
 }
 
-# ジェネレータIDから名前へのマッピング（デコンパイラ用）
+# Reverse mapping from generator ID to name
 GENERATOR_NAMES = {id_: name for name, id_ in GENERATOR_IDS.items()}
-
-# サンプルタイプ
-SAMPLE_TYPES = {
-    1: "monoSample",
-    2: "rightSample",
-    4: "leftSample",
-    8: "linkedSample"
-}
-
-# サンプルタイプの逆引き（名前からIDへ）
-SAMPLE_TYPE_IDS = {name: id_ for id_, name in SAMPLE_TYPES.items()}
