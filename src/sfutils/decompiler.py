@@ -130,13 +130,21 @@ class SF2Decompiler:
 
             sample_link, sample_type = header["sample_link"], header["sample_type"]
             # sample_type: 1=mono, 2=right, 4=left, 8=linked, 0x8000+N=ROM
-            is_stereo = sample_type in [2, 4] and sample_link < len(sample_headers)
+            is_stereo = sample_type & 6 and sample_link < len(sample_headers)
+
+            if is_stereo and sample_link in processed:
+                print(f"    WARNING: Sample \"{header["name"]}\" links to already processed sample \"{sample_headers[sample_link]["name"]}\". Treating as mono.")
+                is_stereo = False
+
+            if is_stereo and sample_type + sample_headers[sample_link]["sample_type"] & 6 != 6:
+                print(f"    WARNING: Inconsistent stereo sample types between \"{header["name"]}\" and \"{sample_headers[sample_link]["name"]}\". Treating as mono.")
+                is_stereo = False
 
             if is_stereo:
                 # Prepare stereo task
-                linked_idx = header["sample_link"]
+                linked_idx = sample_link
                 linked_header = sample_headers[linked_idx]
-                left_h, right_h = (header, linked_header) if header["sample_type"] == 4 else (linked_header, header)
+                left_h, right_h = (header, linked_header) if sample_type & 4 else (linked_header, header)
 
                 # Determine base filename
                 common_name = self._extract_common_name(left_h["name"], right_h["name"]) or f"sample_{idx}_{linked_idx}"
