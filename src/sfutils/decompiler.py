@@ -28,7 +28,7 @@ except ImportError:
     print("Error: numpy library is required. Install it with: pip install numpy")
     sys.exit(1)
 
-from sf2_constants import GENERATOR_NAMES
+from sfutils.constants import GENERATOR_NAMES
 
 
 def read_chunk_header(f):

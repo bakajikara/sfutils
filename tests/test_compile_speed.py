@@ -7,8 +7,8 @@ import shutil
 import os
 import time
 from pathlib import Path
-from sf2_decompiler import SF2Decompiler
-from sf2_compiler import SF2Compiler
+from sfutils.decompiler import SF2Decompiler
+from sfutils.compiler import SF2Compiler
 
 print("=" * 60)
 print("SF2 Compiler Performance Test")
