@@ -23,7 +23,7 @@ except ImportError:
     print("Install it with: pip install soundfile")
     sys.exit(1)
 
-from sfutils.constants import GENERATOR_IDS
+from .constants import GENERATOR_IDS
 
 
 def make_chunk(chunk_id, data):

@@ -1,8 +1,6 @@
 
 import struct
 
-from sfutils.constants import GENERATOR_NAMES
-
 
 def read_chunk_header(f):
     """

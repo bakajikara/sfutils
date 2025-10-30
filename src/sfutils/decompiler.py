@@ -27,8 +27,8 @@ except ImportError:
     print("Error: numpy library is required. Install it with: pip install numpy")
     sys.exit(1)
 
-from sfutils.constants import GENERATOR_NAMES
-from sfutils.parser import SF2Parser
+from .parser import SF2Parser
+from .constants import GENERATOR_NAMES
 
 
 def sanitize_filename(name):

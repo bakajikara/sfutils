@@ -16,8 +16,7 @@ import sys
 import hashlib
 import shutil
 from pathlib import Path
-from sfutils.decompiler import SF2Decompiler
-from sfutils.compiler import SF2Compiler
+from sfutils import SF2Compiler, SF2Decompiler
 from test_equivalence import SF2EquivalenceChecker
 
 
