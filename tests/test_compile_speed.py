@@ -7,7 +7,7 @@ import shutil
 import os
 import time
 from pathlib import Path
-from sfutils import SF2Compiler, SoundFontDecompiler
+from sfutils import SoundFontCompiler, SoundFontDecompiler
 
 print("=" * 60)
 print("SF2 Compiler Performance Test")
@@ -31,7 +31,7 @@ else:
 # compile (performance test)
 print("\n[2/2] Compiling (performance test)...")
 start = time.time()
-compiler = SF2Compiler(temp_dir, output_sf2)
+compiler = SoundFontCompiler(temp_dir, output_sf2)
 compiler.compile()
 elapsed = time.time() - start
 

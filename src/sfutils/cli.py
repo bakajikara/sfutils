@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 
-from .compiler import SF2Compiler
+from .compiler import SoundFontCompiler
 from .decompiler import SoundFontDecompiler
 
 
@@ -54,7 +54,7 @@ def main(argv=None):
         if args.command == "compile":
             inp = Path(args.input_dir)
             out = args.output_sf
-            compiler = SF2Compiler(inp, out)
+            compiler = SoundFontCompiler(inp, out)
             compiler.compile()
         elif args.command == "decompile":
             sf = Path(args.sf_path)

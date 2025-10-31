@@ -17,8 +17,10 @@ import os
 import sys
 import json
 import struct
+import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from abc import ABC, abstractmethod
 
 try:
     import soundfile as sf
@@ -27,7 +29,7 @@ except ImportError:
     print("Install it with: pip install soundfile")
     sys.exit(1)
 
-from .constants import GENERATOR_IDS
+from .constants import GENERATOR_IDS, SF_SAMPLETYPE_VORBIS
 
 
 def make_chunk(chunk_id, data):
@@ -96,30 +98,87 @@ def make_zstr(text, encoding="ascii"):
         return encoded + b"\x00\x00"
 
 
-class SF2Compiler:
+class SoundFontCompiler(ABC):
     """
-    A class to compile a directory structure into an SF2 file.
+    Compiles a SoundFont file from an expanded directory structure.
     """
 
-    # Padding between samples in sample units (minimum 46 samples or 92 bytes)
-    SAMPLE_PADDING = 46
-
-    def __init__(self, input_dir, output_sf2):
+    def __new__(cls, input_dir, output_sf):
         """
-        Initializes the SF2Compiler.
+        Factory method to create a SoundFontCompiler instance.
+        """
+        # Determine subclass based on output file extension
+        ext = Path(output_sf).suffix.lower()
+        if ext == ".sf3":
+            instance = super().__new__(_SF3Compiler)
+        else:
+            instance = super().__new__(_SF2Compiler)
+
+        return instance
+
+    def __init__(self, input_dir, output_sf):
+        """
+        Initializes the SoundFont Compiler.
 
         Args:
             input_dir: The input directory path.
-            output_sf2: The output SF2 file path.
+            output_sf: The output SoundFont file path.
         """
         self.input_dir = Path(input_dir)
-        self.output_sf2 = output_sf2
+        self.output_sf = output_sf
 
         # Data storage
         self.bank_info = {}
         self.samples = []
         self.instruments = []
         self.presets = []
+
+    @abstractmethod
+    def _get_sample_padding_bytes(self):
+        """
+        Returns the padding bytes to add between samples.
+        SF2 uses PCM padding (46 samples * 2 bytes = 92 bytes).
+        SF3 uses no padding.
+        """
+        pass
+
+    @abstractmethod
+    def _update_sample_offset(self, current_offset, num_samples, data_length):
+        """
+        Updates the sample offset after writing a sample.
+
+        Args:
+            current_offset: Current offset in sample units (SF2) or bytes (SF3).
+            num_samples: Number of samples written.
+            data_length: Length of the data written in bytes.
+
+        Returns:
+            Updated offset.
+        """
+        pass
+
+    @abstractmethod
+    def _get_default_soundfont_version(self):
+        """
+        Returns the default SoundFont version string for this format.
+        SF2 returns "2.01", SF3 returns "3.01".
+        """
+        pass
+
+    @abstractmethod
+    def _build_sample_header_record(self, sample, idx):
+        """
+        Builds a single sample header record.
+        SF2 and SF3 have different offset and type handling.
+
+        Args:
+            sample: Sample dictionary with metadata and calculated positions.
+            idx: Sample index.
+
+        Returns:
+            46-byte sample header record.
+        """
+        pass
 
     def compile(self):
         """
@@ -134,9 +193,9 @@ class SF2Compiler:
         self._load_instruments()
         self._load_presets()
 
-        # Generate the SF2 file
-        print(f"Writing SF2 file: {self.output_sf2}")
-        self._write_sf2_file()
+        # Generate the SoundFont file
+        print(f"Writing SoundFont file: {self.output_sf}")
+        self._write_soundfont_file()
 
         print("Compilation complete!")
 
@@ -325,30 +384,31 @@ class SF2Compiler:
             "_is_stereo": False
         }
 
-    def _read_pcm_data(self, audio_path, channel=None):
+    @abstractmethod
+    def _read_audio_data(self, audio_path, channel=None):
         """
-        Reads PCM data from an audio file (FLAC, WAV, etc.) when needed.
+        Reads audio data from a file when needed.
 
         Args:
             audio_path: The path to the audio file.
             channel: "left", "right", or None (for mono).
+
+        Returns:
+            Tuple of (audio_data_bytes, sample_rate, num_samples)
         """
-        try:
-            # Read with soundfile (supports FLAC, WAV, OGG, AIFF, etc.)
-            data, samplerate = sf.read(audio_path, dtype="int16")
+        pass
 
-            # Separate channels
-            if channel == "left":
-                if len(data.shape) == 2:
-                    data = data[:, 0]
-            elif channel == "right":
-                if len(data.shape) == 2:
-                    data = data[:, 1]
+    @abstractmethod
+    def _calculate_sample_positions(self, sample, current_offset, data_length):
+        """
+        Calculates absolute sample positions in the smpl chunk.
 
-            # Convert NumPy array to bytes
-            return data.tobytes(), samplerate
-        except Exception as e:
-            raise ValueError(f"Failed to read audio file {audio_path}: {e}")
+        Args:
+            sample: The sample dictionary to update.
+            current_offset: The current byte offset in the smpl chunk.
+            data_length: The length of the audio data in bytes.
+        """
+        pass
 
     def _load_instruments(self):
         """
@@ -437,11 +497,11 @@ class SF2Compiler:
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def _write_sf2_file(self):
+    def _write_soundfont_file(self):
         """
-        Writes the SF2 file.
+        Writes the SoundFont file.
         """
-        with open(self.output_sf2, "wb") as f:
+        with open(self.output_sf, "wb") as f:
             # RIFF header (size updated later)
             f.write(b"RIFF")
             riff_size_pos = f.tell()
@@ -470,8 +530,12 @@ class SF2Compiler:
         """
         data = b""
         # Version info (required, first)
-        version = self.bank_info.get("version", "2.04")
-        major, minor = version.split(".")
+        # Use format-specific major version (2 for SF2, 3 for SF3)
+        # and minor version from info.json
+        default_version = self._get_default_soundfont_version()
+        major, _ = default_version.split(".")
+        version = self.bank_info.get("version", default_version)
+        _, minor = version.split(".")
         ifil_data = struct.pack("<HH", int(major), int(minor))
         data += make_chunk(b"ifil", ifil_data)
 
@@ -483,7 +547,7 @@ class SF2Compiler:
         bank_name = self.bank_info.get("bank_name", "Untitled")
         data += make_chunk(b"INAM", make_zstr(bank_name))
 
-        # Output in SF2 spec order (same as original files)
+        # Output in SoundFont spec order (same as original files)
         info_order = ["creation_date", "engineer", "product", "copyright", "comment", "software"]
         info_map = {
             "creation_date": b"ICRD",
@@ -519,31 +583,29 @@ class SF2Compiler:
         smpl_start = f.tell()
 
         # Write sample data sequentially with progress display
-        padding = b"\x00" * self.SAMPLE_PADDING * 2
+        padding = self._get_sample_padding_bytes()
         current_offset = 0
         total_samples = len(self.samples)
 
-        print(f"  Writing {total_samples} samples to SF2...")
+        print(f"  Writing {total_samples} samples to SoundFont...")
 
         for idx, sample in enumerate(self.samples, 1):
-            # Read PCM data only when needed, passing channel info
+            # Read audio data only when needed, passing channel info
             channel = sample.get("_channel")
-            pcm, sample_rate = self._read_pcm_data(sample["_audio_path"], channel)
-            num_samples = len(pcm) // 2
+            audio_data, sample_rate, num_samples = self._read_audio_data(sample["_audio_path"], channel)
 
-            # Calculate absolute positions
-            sample["_absolute_start"] = current_offset + sample["start"]
-            sample["_absolute_end"] = current_offset + sample["end"]
-            sample["_absolute_start_loop"] = current_offset + sample["start_loop"]
-            sample["_absolute_end_loop"] = current_offset + sample["end_loop"]
+            # Store sample rate
             sample["_sample_rate"] = sample_rate
 
+            # Calculate absolute positions (format-specific)
+            self._calculate_sample_positions(sample, current_offset, len(audio_data))
+
             # Write data
-            f.write(pcm)
+            f.write(audio_data)
             f.write(padding)
 
             # Update offset for the next sample
-            current_offset += num_samples + self.SAMPLE_PADDING
+            current_offset = self._update_sample_offset(current_offset, num_samples, len(audio_data))
 
             # Show progress inline
             progress = (idx / total_samples) * 100
@@ -579,35 +641,8 @@ class SF2Compiler:
         """
         shdr_data = []
         for idx, sample in enumerate(self.samples):
-            # Dynamically generate sample name (add left/right suffixes)
-            base_name = sample["sample_name"]
-            if sample.get("_is_stereo"):
-                channel = sample.get("_channel")
-                name = f"{base_name}_L"[:20] if channel == "left" else f"{base_name}_R"[:20]
-            else:
-                name = base_name[:20]
-
-            name_bytes = name.ljust(20, "\x00").encode("ascii")
-            # Use absolute positions calculated in _write_sdta_chunk_direct
-            start = sample.get("_absolute_start", 0)
-            end = sample.get("_absolute_end", 0)
-            start_loop = sample.get("_absolute_start_loop", 0)
-            end_loop = sample.get("_absolute_end_loop", 0)
-            sample_rate = sample.get("_sample_rate", 44100)
-
-            shdr_record = struct.pack(
-                "<20sIIIIIBBHH",
-                name_bytes,
-                start,
-                end,
-                start_loop,
-                end_loop,
-                sample_rate,
-                sample["original_key"],
-                sample["correction"] & 0xFF,
-                sample["sample_link"],
-                sample["sample_type"]
-            )
+            # Use format-specific sample header building
+            shdr_record = self._build_sample_header_record(sample, idx)
             shdr_data.append(shdr_record)
 
         # Terminator ("EOS")
@@ -794,22 +829,321 @@ class SF2Compiler:
             pgen_data.append(struct.pack("<Hh", 41, inst_id))
 
 
+class _SF2Compiler(SoundFontCompiler):
+    """
+    Compiler for SF2 files (PCM audio).
+    """
+
+    # Padding between samples in sample units (minimum 46 samples or 92 bytes)
+    SAMPLE_PADDING = 46
+
+    def _get_sample_padding_bytes(self):
+        """
+        Returns PCM padding bytes for SF2.
+        """
+        return b"\x00" * self.SAMPLE_PADDING * 2
+
+    def _update_sample_offset(self, current_offset, num_samples, data_length):
+        """
+        Updates the sample offset in sample units for SF2.
+        """
+        return current_offset + num_samples + self.SAMPLE_PADDING
+
+    def _get_default_soundfont_version(self):
+        """
+        Returns the default SoundFont version for SF2 format.
+        """
+        return "2.01"
+
+    def _build_sample_header_record(self, sample, idx):
+        """
+        Builds a sample header record for SF2 format.
+
+        SF2 uses absolute positions from the start of the smpl chunk.
+        Loop positions are also absolute offsets.
+        Sample type is standard (mono=1, right=2, left=4).
+        """
+        # Dynamically generate sample name (add left/right suffixes)
+        base_name = sample["sample_name"]
+        if sample.get("_is_stereo"):
+            channel = sample.get("_channel")
+            name = f"{base_name}_L"[:20] if channel == "left" else f"{base_name}_R"[:20]
+        else:
+            name = base_name[:20]
+
+        name_bytes = name.ljust(20, "\x00").encode("ascii")
+
+        # Use absolute positions calculated in _write_sdta_chunk_direct
+        start = sample.get("_absolute_start", 0)
+        end = sample.get("_absolute_end", 0)
+        start_loop = sample.get("_absolute_start_loop", 0)
+        end_loop = sample.get("_absolute_end_loop", 0)
+        sample_rate = sample.get("_sample_rate", 44100)
+
+        # SF2: standard sample type (no compression flag)
+        sample_type = sample["sample_type"]
+
+        return struct.pack(
+            "<20sIIIIIBBHH",
+            name_bytes,
+            start,
+            end,
+            start_loop,
+            end_loop,
+            sample_rate,
+            sample["original_key"],
+            sample["correction"] & 0xFF,
+            sample["sample_link"],
+            sample_type
+        )
+
+    def _read_audio_data(self, audio_path, channel=None):
+        """
+        Reads PCM data from an audio file (FLAC, WAV, etc.) when needed.
+
+        Args:
+            audio_path: The path to the audio file.
+            channel: "left", "right", or None (for mono).
+
+        Returns:
+            Tuple of (pcm_data_bytes, sample_rate, num_samples)
+        """
+        try:
+            # Read with soundfile (supports FLAC, WAV, OGG, AIFF, etc.)
+            data, samplerate = sf.read(audio_path, dtype="int16")
+
+            # Separate channels
+            if channel == "left":
+                if len(data.shape) == 2:
+                    data = data[:, 0]
+            elif channel == "right":
+                if len(data.shape) == 2:
+                    data = data[:, 1]
+
+            # Convert NumPy array to bytes
+            pcm_bytes = data.tobytes()
+            num_samples = len(pcm_bytes) // 2
+
+            return pcm_bytes, samplerate, num_samples
+        except Exception as e:
+            raise ValueError(f"Failed to read audio file {audio_path}: {e}")
+
+    def _calculate_sample_positions(self, sample, current_offset, data_length):
+        """
+        Calculates absolute sample positions for SF2.
+
+        SF2 uses sample units (not bytes) for all positions.
+        Loop positions are absolute offsets from the start of smpl chunk.
+        """
+        # SF2: current_offset is in sample units
+        # data_length is in bytes, convert to samples
+        num_samples = data_length // 2
+
+        # Use absolute positions calculated from metadata
+        sample["_absolute_start"] = current_offset + sample["start"]
+        sample["_absolute_end"] = current_offset + sample["end"]
+        sample["_absolute_start_loop"] = current_offset + sample["start_loop"]
+        sample["_absolute_end_loop"] = current_offset + sample["end_loop"]
+
+
+class _SF3Compiler(SoundFontCompiler):
+    """
+    Compiler for SF3 files (Ogg Vorbis audio).
+    """
+
+    # Padding between samples in bytes (no specific requirement for Ogg Vorbis)
+    BYTE_PADDING = 0
+
+    def __init__(self, input_dir, output_sf):
+        """
+        Initializes the SF3 Compiler.
+
+        Args:
+            input_dir: The input directory path.
+            output_sf: The output SoundFont file path.
+        """
+        super().__init__(input_dir, output_sf)
+        # Ogg Vorbis quality setting (0.0 to 1.0)
+        self.ogg_quality = 0.8
+
+    def _get_sample_padding_bytes(self):
+        """
+        Returns byte padding for SF3 (Ogg Vorbis).
+        """
+        return b"\x00" * self.BYTE_PADDING
+
+    def _update_sample_offset(self, current_offset, num_samples, data_length):
+        """
+        Updates the sample offset in bytes for SF3.
+        For Ogg Vorbis, offsets are in bytes, not sample units.
+        """
+        return current_offset + data_length + self.BYTE_PADDING
+
+    def _get_default_soundfont_version(self):
+        """
+        Returns the default SoundFont version for SF3 format.
+        """
+        return "3.01"
+
+    def _build_sample_header_record(self, sample, idx):
+        """
+        Builds a sample header record for SF3 format.
+
+        SF3 differences:
+        - Start/end positions are absolute BYTE offsets (not sample units)
+        - Loop positions are RELATIVE to the sample start (not absolute)
+        - Sample type has 0x0010 flag added to indicate Ogg Vorbis compression
+        """
+        # Dynamically generate sample name (add left/right suffixes)
+        base_name = sample["sample_name"]
+        if sample.get("_is_stereo"):
+            channel = sample.get("_channel")
+            name = f"{base_name}_L"[:20] if channel == "left" else f"{base_name}_R"[:20]
+        else:
+            name = base_name[:20]
+
+        name_bytes = name.ljust(20, "\x00").encode("ascii")
+
+        # SF3: Start/end are absolute byte offsets in smpl chunk
+        start = sample.get("_absolute_start", 0)
+        end = sample.get("_absolute_end", 0)
+
+        # SF3: Loop positions are RELATIVE to sample start
+        # Calculate relative offsets from the original metadata
+        start_loop = sample.get("start_loop", 0)
+        end_loop = sample.get("end_loop", 0)
+
+        sample_rate = sample.get("_sample_rate", 44100)
+
+        # SF3: Add Vorbis compression flag to sample type
+        base_sample_type = sample["sample_type"]
+        sample_type = base_sample_type | SF_SAMPLETYPE_VORBIS
+
+        return struct.pack(
+            "<20sIIIIIBBHH",
+            name_bytes,
+            start,
+            end,
+            start_loop,
+            end_loop,
+            sample_rate,
+            sample["original_key"],
+            sample["correction"] & 0xFF,
+            sample["sample_link"],
+            sample_type
+        )
+
+    def _update_sample_offset(self, current_offset, num_samples, data_length):
+        """
+        Updates the sample offset in bytes for SF3.
+        For Ogg Vorbis, offsets are in bytes, not sample units.
+        """
+        return current_offset + data_length + self.BYTE_PADDING
+
+    def _read_audio_data(self, audio_path, channel=None):
+        """
+        Reads Ogg Vorbis data from an audio file when needed.
+
+        Args:
+            audio_path: The path to the audio file.
+            channel: "left", "right", or None (for mono).
+
+        Returns:
+            Tuple of (ogg_data_bytes, sample_rate, num_samples)
+        """
+        try:
+            # For SF3, we expect .ogg files
+            if audio_path.suffix.lower() == ".ogg":
+                # Read raw Ogg Vorbis data directly
+                with open(audio_path, "rb") as f:
+                    ogg_data = f.read()
+
+                # Get metadata using soundfile
+                info = sf.info(audio_path)
+                sample_rate = info.samplerate
+                num_samples = info.frames
+
+                return ogg_data, sample_rate, num_samples
+            else:
+                # If not .ogg, read as PCM and encode to Ogg Vorbis
+                return self._encode_to_ogg_vorbis(audio_path, channel)
+        except Exception as e:
+            raise ValueError(f"Failed to read audio file {audio_path}: {e}")
+
+    def _calculate_sample_positions(self, sample, current_offset, data_length):
+        """
+        Calculates absolute sample positions for SF3.
+
+        SF3 uses byte offsets for start/end positions.
+        Loop positions are relative to the sample start.
+        """
+        # SF3: start and end are absolute byte offsets in smpl chunk
+        sample["_absolute_start"] = current_offset
+        sample["_absolute_end"] = current_offset + data_length
+
+        # Loop positions remain as-is (relative to sample start)
+        # They are already stored in the metadata and will be used directly
+
+    def _encode_to_ogg_vorbis(self, audio_path, channel=None):
+        """
+        Encodes an audio file to Ogg Vorbis format.
+
+        Args:
+            audio_path: The path to the audio file.
+            channel: "left", "right", or None (for mono).
+
+        Returns:
+            Tuple of (ogg_data_bytes, sample_rate, num_samples)
+        """
+        # Read audio data to get metadata and separate channels if needed
+        data, samplerate = sf.read(audio_path, dtype="float32")
+
+        # Separate channels if needed
+        if channel == "left":
+            if len(data.shape) == 2:
+                data = data[:, 0]
+        elif channel == "right":
+            if len(data.shape) == 2:
+                data = data[:, 1]
+
+        num_samples = len(data)
+
+        # Create a temporary file to write Ogg Vorbis data
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        try:
+            # Write to Ogg Vorbis format with specified quality
+            sf.write(tmp_path, data, samplerate, format="OGG", subtype="VORBIS", compression_level=self.ogg_quality)
+
+            # Read back the encoded Ogg Vorbis data
+            with open(tmp_path, "rb") as f:
+                ogg_data = f.read()
+
+            return ogg_data, samplerate, num_samples
+
+        finally:
+            # Clean up temporary file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+
 def main():
     """
-    Main function to run the SF2 compiler.
+    Main function to run the SoundFont compiler.
     """
     if len(sys.argv) < 3:
-        print(f"Usage: python {sys.argv[0]} <input_directory> <output.sf2>")
+        print(f"Usage: python {sys.argv[0]} <input_directory> <output_file>")
         sys.exit(1)
 
     input_dir = sys.argv[1]
-    output_sf2 = sys.argv[2]
+    output_sf = sys.argv[2]
 
     if not os.path.exists(input_dir):
         print(f"Error: Directory not found - {input_dir}")
         sys.exit(1)
 
-    compiler = SF2Compiler(input_dir, output_sf2)
+    compiler = SoundFontCompiler(input_dir, output_sf)
     compiler.compile()
 
 
