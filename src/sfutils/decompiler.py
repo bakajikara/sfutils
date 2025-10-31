@@ -4,9 +4,9 @@
 # See the LICENSE file in the project root for the full license text.
 
 """
-SF2 Decompiler - Decompiles a SoundFont2 file into a directory structure.
+SoundFont Decompiler - Decompiles a SoundFont file into a directory structure.
 
-This tool expands an SF2 file into the following structure:
+This tool expands a SoundFont file into the following structure:
 - info.json: Metadata
 - samples/: FLAC files (waveform data)
 - instruments/: Instrument definitions (JSON)
@@ -18,6 +18,7 @@ import sys
 import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from abc import ABC, abstractmethod
 
 try:
     import soundfile as sf
@@ -31,7 +32,7 @@ except ImportError:
     print("Error: numpy library is required. Install it with: pip install numpy")
     sys.exit(1)
 
-from .parser import SF2Parser
+from .parser import SoundFontParser
 from .constants import GENERATOR_NAMES
 
 
@@ -51,29 +52,43 @@ def sanitize_filename(name):
     return name.strip()
 
 
-class SF2Decompiler:
+class SoundFontDecompiler(ABC):
     """
-    A class to decompile an SF2 file into a directory structure.
+    Decompiles a SoundFont file into a directory structure.
+    Automatically handles SF2 (PCM) and SF3 (Ogg Vorbis) formats.
     """
-
-    def __init__(self, sf2_path, output_dir):
+    def __new__(cls, sf_path, output_dir):
         """
-        Initializes the SF2Decompiler.
+        Factory method to create a SoundFontDecompiler instance.
+        """
+        parser_for_check = SoundFontParser(sf_path)
+        version = parser_for_check.get_version()
+
+        if version.startswith("3"):
+            instance = super().__new__(_SF3Decompiler)
+        else:
+            instance = super().__new__(_SF2Decompiler)
+
+        return instance
+
+    def __init__(self, sf_path, output_dir):
+        """
+        Initializes the SoundFont Decompiler.
 
         Args:
-            sf2_path: The path to the SF2 file.
+            sf_path: The path to the SoundFont file.
             output_dir: The output directory path.
         """
-        self.sf2_path = sf2_path
+        self.sf_path = sf_path
         self.output_dir = Path(output_dir)
-        self.parser = SF2Parser(sf2_path)
+        self.parser = SoundFontParser(sf_path)
         self.sample_id_to_filename = {}
 
     def decompile(self):
         """
-        Decompiles the SF2 file.
+        Decompiles the file.
         """
-        print(f"Parsing SF2 file: {self.sf2_path}")
+        print(f"Parsing file: {self.sf_path}")
         self.parser.parse()
 
         # Create output directory
@@ -249,7 +264,7 @@ class SF2Decompiler:
 
     def _process_sample_task(self, task, samples_dir, sample_data, sample_headers):
         """
-        Processes a single sample task(mono or stereo).
+        Processes a single sample task (mono or stereo).
         Returns a dict with filename and id_mapping.
         """
         if task["type"] == "stereo":
@@ -271,74 +286,26 @@ class SF2Decompiler:
                 sample_data
             )
 
+    @abstractmethod
     def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
         """
-        Processes a stereo sample(thread - safe version).
+        Processes a stereo sample.
         """
-        # Determine left and right channels
-        left_h, right_h, left_idx, right_idx = (
-            (header, linked_header, idx, linked_idx)
-            if header["sample_type"] == 4
-            else (linked_header, header, linked_idx, idx)
-        )
+        pass
 
-        # Left channel PCM data
-        left_pcm = np.frombuffer(sample_data[left_h["start"] * 2:left_h["end"] * 2], dtype=np.int16)
-        # Right channel PCM data
-        right_pcm = np.frombuffer(sample_data[right_h["start"] * 2:right_h["end"] * 2], dtype=np.int16)
-        # Align lengths (to the shorter one)
-        min_len = min(len(left_pcm), len(right_pcm))
-        # Create stereo array (samples, channels)
-        stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
-
-        # Use the provided unique filename
-        final_filename = filename
-
-        # Write stereo FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_16")
-        # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "stereo", len(left_pcm), left_h)
-
-        return {
-            "filename": final_filename,
-            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
-        }
-
+    @abstractmethod
     def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
         """
-        Processes a mono sample(thread - safe version).
+        Processes a mono sample.
         """
-        pcm_array = np.frombuffer(sample_data[header["start"] * 2:header["end"] * 2], dtype=np.int16)
+        pass
 
-        # Use the provided unique filename
-        final_filename = filename
-
-        # Write mono FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", pcm_array, header["sample_rate"], subtype="PCM_16")
-        # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", len(pcm_array), header)
-
-        return {
-            "filename": final_filename,
-            "id_mapping": {idx: final_filename}
-        }
-
-    def _write_sample_metadata(self, path, name, type, length, header):
+    @abstractmethod
+    def _write_sample_metadata(self, path, name, type, header):
         """
         Writes sample metadata to a JSON file.
         """
-        metadata = {
-            "sample_name": name,
-            "sample_type": type,
-            "start": 0,
-            "end": length,
-            "start_loop": header["start_loop"] - header["start"],
-            "end_loop": header["end_loop"] - header["start"],
-            "original_key": header["original_key"],
-            "correction": header["correction"]
-        }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        pass
 
     def _export_instruments(self):
         """
@@ -431,8 +398,8 @@ class SF2Decompiler:
                     final_name = self.sample_id_to_filename.get(amount, sanitize_filename(sample_h["name"]))
                     generators["sample"] = final_name
                     # Save channel info for stereo
-                    if sample_h["sample_type"] in [2, 4]:  # Stereo
-                        generators["sample_channel"] = "right" if sample_h["sample_type"] == 2 else "left"
+                    if sample_h["sample_type"] & 6:  # Stereo
+                        generators["sample_channel"] = "left" if sample_h["sample_type"] & 4 else "right"
                 else:
                     generators["sample"] = amount
             elif gen["oper"] in [43, 44]:  # keyRange, velRange
@@ -484,23 +451,181 @@ class SF2Decompiler:
         return common.rstrip("_-( ") or left_name
 
 
+class _SF2Decompiler(SoundFontDecompiler):
+    """
+    Decompiler for SF2 files (PCM audio).
+    """
+
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+        """
+        Processes a stereo sample from PCM data.
+        """
+        # Determine left and right channels
+        left_h, right_h, left_idx, right_idx = (
+            (header, linked_header, idx, linked_idx)
+            if header["sample_type"] == 4
+            else (linked_header, header, linked_idx, idx)
+        )
+
+        # Left channel PCM data
+        left_pcm = np.frombuffer(sample_data[left_h["start"] * 2:left_h["end"] * 2], dtype=np.int16)
+        # Right channel PCM data
+        right_pcm = np.frombuffer(sample_data[right_h["start"] * 2:right_h["end"] * 2], dtype=np.int16)
+        # Align lengths (to the shorter one)
+        min_len = min(len(left_pcm), len(right_pcm))
+        # Create stereo array (samples, channels)
+        stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
+
+        # Use the provided unique filename
+        final_filename = filename
+
+        # Write stereo FLAC file
+        sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_16")
+        # Save metadata to JSON (as relative positions)
+        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "stereo", left_h)
+
+        return {
+            "filename": final_filename,
+            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
+        }
+
+    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
+        """
+        Processes a mono sample from PCM data.
+        """
+        pcm_array = np.frombuffer(sample_data[header["start"] * 2:header["end"] * 2], dtype=np.int16)
+
+        # Use the provided unique filename
+        final_filename = filename
+
+        # Write mono FLAC file
+        sf.write(samples_dir / f"{final_filename}.flac", pcm_array, header["sample_rate"], subtype="PCM_16")
+        # Save metadata to JSON (as relative positions)
+        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", header)
+
+        return {
+            "filename": final_filename,
+            "id_mapping": {idx: final_filename}
+        }
+
+    def _write_sample_metadata(self, path, name, type, header):
+        """
+        Writes sample metadata to a JSON file.
+        """
+        metadata = {
+            "sample_name": name,
+            "sample_type": type,
+            "start": 0,
+            "end": header["end"] - header["start"],
+            "start_loop": header["start_loop"] - header["start"],
+            "end_loop": header["end_loop"] - header["start"],
+            "original_key": header["original_key"],
+            "correction": header["correction"]
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+
+class _SF3Decompiler(SoundFontDecompiler):
+    """
+    Decompiler for SF3 files (Ogg Vorbis audio).
+    """
+
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+        """
+        Processes a stereo sample from Ogg Vorbis data.
+        TODO: Implement proper Ogg Vorbis stereo handling if needed.
+        """
+        left_h, right_h, left_idx, right_idx = (
+            (header, linked_header, idx, linked_idx)
+            if header["sample_type"] & 4
+            else (linked_header, header, linked_idx, idx)
+        )
+
+        # Extract Ogg data for left and right channels
+        left_ogg = sample_data[left_h["start"]:left_h["end"]]
+        right_ogg = sample_data[right_h["start"]:right_h["end"]]
+
+        final_filename = filename
+
+        # Write raw Ogg Vorbis bytes without re-encoding
+        ogg_path_left = samples_dir / f"{final_filename}_L.ogg"
+        with open(ogg_path_left, "wb") as f:
+            f.write(left_ogg)
+
+        ogg_path_right = samples_dir / f"{final_filename}_R.ogg"
+        with open(ogg_path_right, "wb") as f:
+            f.write(right_ogg)
+
+        # Save metadata
+        self._write_sample_metadata(samples_dir / f"{final_filename}_L.json", f"{final_filename}_L", "mono", left_h)
+        self._write_sample_metadata(samples_dir / f"{final_filename}_R.json", f"{final_filename}_R", "mono", right_h)
+
+        return {
+            "filename": final_filename,
+            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
+        }
+
+    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
+        """
+        Processes a mono sample from Ogg Vorbis data.
+        """
+        ogg_data = sample_data[header["start"]:header["end"]]
+
+        final_filename = filename
+
+        # Write raw Ogg Vorbis bytes without re-encoding
+        ogg_path = samples_dir / f"{final_filename}.ogg"
+        with open(ogg_path, "wb") as f:
+            f.write(ogg_data)
+
+        # Save metadata
+        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", header)
+
+        return {
+            "filename": final_filename,
+            "id_mapping": {idx: final_filename}
+        }
+
+    def _write_sample_metadata(self, path, name, type, header):
+        """
+        Writes sample metadata to a JSON file.
+        """
+        metadata = {
+            "sample_name": name,
+            "sample_type": type,
+            "start": 0,
+            "end": header["end"] - header["start"],
+            "start_loop": header["start_loop"],
+            "end_loop": header["end_loop"],
+            "original_key": header["original_key"],
+            "correction": header["correction"]
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+
 def main():
     """
-    Main function to run the SF2 decompiler.
+    Main function to run the SoundFont decompiler.
     """
     if len(sys.argv) < 3:
-        print(f"Usage: python {sys.argv[0]} <input.sf2> <output_directory>")
+        print(f"Usage: python {sys.argv[0]} <input_file> <output_directory>")
         sys.exit(1)
 
-    sf2_file = sys.argv[1]
+    sf_file = sys.argv[1]
     output_dir = sys.argv[2]
 
-    if not os.path.exists(sf2_file):
-        print(f"Error: File not found - {sf2_file}")
+    if not os.path.exists(sf_file):
+        print(f"Error: File not found - {sf_file}")
         sys.exit(1)
 
-    decompiler = SF2Decompiler(sf2_file, output_dir)
-    decompiler.decompile()
+    try:
+        decompiler = SoundFontDecompiler(sf_file, output_dir)
+        decompiler.decompile()
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

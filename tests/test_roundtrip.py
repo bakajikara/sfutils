@@ -16,7 +16,7 @@ import sys
 import hashlib
 import shutil
 from pathlib import Path
-from sfutils import SF2Compiler, SF2Decompiler
+from sfutils import SF2Compiler, SoundFontDecompiler
 from test_equivalence import SF2EquivalenceChecker
 
 
@@ -63,7 +63,7 @@ def main():
             print(f"   Removing existing directory...")
             shutil.rmtree(temp_dir)
 
-        decompiler = SF2Decompiler(str(original_sf2), str(temp_dir))
+        decompiler = SoundFontDecompiler(str(original_sf2), str(temp_dir))
         decompiler.decompile()
         print(f"   ✓ Decompile complete")
 
