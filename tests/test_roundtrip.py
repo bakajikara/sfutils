@@ -16,7 +16,7 @@ import sys
 import hashlib
 import shutil
 from pathlib import Path
-from sfutils import SF2Compiler, SoundFontDecompiler
+from sfutils import SoundFontCompiler, SoundFontDecompiler
 from test_equivalence import SF2EquivalenceChecker
 
 
@@ -81,7 +81,7 @@ def main():
             print(f"   Removing existing file...")
             rebuilt_sf2.unlink()
 
-        compiler = SF2Compiler(str(temp_dir), str(rebuilt_sf2))
+        compiler = SoundFontCompiler(str(temp_dir), str(rebuilt_sf2))
         compiler.compile()
         print(f"   ✓ Compile complete")
         print(f"   Size: {rebuilt_sf2.stat().st_size:,} bytes")

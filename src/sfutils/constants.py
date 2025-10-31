@@ -77,3 +77,7 @@ GENERATOR_IDS = {
 
 # Reverse mapping from generator ID to name
 GENERATOR_NAMES = {id_: name for name, id_ in GENERATOR_IDS.items()}
+
+# SF3 additional flags
+# Indicates Ogg Vorbis compression (SF3 extension)
+SF_SAMPLETYPE_VORBIS = 0x0010
