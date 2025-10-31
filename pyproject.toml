@@ -17,3 +17,7 @@ dependencies = [
 
 [project.scripts]
 sfutils = "sfutils.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages.find = { where = ["src"], exclude = ["tests", "tools", "tests.*", "tools.*"] }
