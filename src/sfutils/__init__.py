@@ -4,11 +4,11 @@
 # See the LICENSE file in the project root for the full license text.
 
 from .compiler import SF2Compiler
-from .decompiler import SF2Decompiler
-from .parser import SF2Parser
+from .decompiler import SoundFontDecompiler
+from .parser import SoundFontParser
 
 __all__ = [
     "SF2Compiler",
-    "SF2Decompiler",
-    "SF2Parser"
+    "SoundFontDecompiler",
+    "SoundFontParser"
 ]

@@ -3,6 +3,12 @@
 # This file is licensed under the MIT License (MIT).
 # See the LICENSE file in the project root for the full license text.
 
+"""
+SoundFont Parser - Parses SoundFont files to extract metadata and structure.
+
+This tool reads a SoundFont file and extracts its INFO, sdta, and pdta chunks,
+providing access to preset and instrument definitions, sample data, and metadata.
+"""
 
 import struct
 
@@ -29,17 +35,17 @@ def read_chunk_header(f):
     return chunk_id, chunk_size
 
 
-class SF2Parser:
+class SoundFontParser:
     """
-    A parser for SF2 files.
+    A parser for SoundFont files.
     """
 
     def __init__(self, filepath):
         """
-        Initializes the SF2Parser.
+        Initializes the parser.
 
         Args:
-            filepath: The path to the SF2 file.
+            filepath: The path to the SoundFont file.
         """
         self.filepath = filepath
         self.file = None
@@ -59,9 +65,30 @@ class SF2Parser:
         self._preset_modulators = None
         self._instrument_modulators = None
 
+    def get_version(self):
+        """
+        Gets the SoundFont version from the INFO chunk.
+        Returns "2.01" if not found.
+        """
+
+        # If info_data is not parsed yet, parse it
+        if not self.info_data:
+            self._parse(info_only=True)
+
+        # Return the cached version
+        return self.info_data.get("version", "2.01")
+
     def parse(self):
         """
         Parses the entire SF2 file.
+        """
+        if self._preset_headers is not None:
+            return
+        self._parse()
+
+    def _parse(self, info_only=False):
+        """
+        Internal parsing logic. Can stop early if info_only is True.
         """
         with open(self.filepath, "rb") as f:
             self.file = f
@@ -77,10 +104,10 @@ class SF2Parser:
             if form_type != b"sfbk":
                 raise ValueError("Not a SoundFont file")
 
-            # Parse the three main chunks
-            self._parse_chunks()
+            # Parse the main chunks
+            self._parse_chunks(info_only=info_only)
 
-    def _parse_chunks(self):
+    def _parse_chunks(self, info_only=False):
         """
         Parses INFO, sdta, and pdta chunks.
         """
@@ -91,6 +118,8 @@ class SF2Parser:
                     list_type = self.file.read(4)
                     if list_type == b"INFO":
                         self._parse_info_list(chunk_size - 4)
+                        if info_only:
+                            return
                     elif list_type == b"sdta":
                         self._parse_sdta_list(chunk_size - 4)
                     elif list_type == b"pdta":

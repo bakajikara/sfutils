@@ -4,9 +4,9 @@
 # See the LICENSE file in the project root for the full license text.
 
 """
-SF2 Compiler - Rebuilds a SoundFont2 file from an expanded directory structure.
+SoundFont Compiler - Rebuilds a SoundFont file from an expanded directory structure.
 
-This tool generates an SF2 file from the following structure:
+This tool generates a SoundFont file from the following structure:
 - info.json: Metadata
 - samples/: Audio files (FLAC, WAV, etc.)
 - instruments/: Instrument definitions (JSON)

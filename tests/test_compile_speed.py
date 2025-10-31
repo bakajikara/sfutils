@@ -7,7 +7,7 @@ import shutil
 import os
 import time
 from pathlib import Path
-from sfutils import SF2Compiler, SF2Decompiler
+from sfutils import SF2Compiler, SoundFontDecompiler
 
 print("=" * 60)
 print("SF2 Compiler Performance Test")
@@ -21,7 +21,7 @@ output_sf2 = "temp_speed_output.sf2"
 if not Path(temp_dir).exists():
     print("\n[1/2] Decompiling (one-time setup)...")
     start = time.time()
-    decompiler = SF2Decompiler(original_sf2, temp_dir)
+    decompiler = SoundFontDecompiler(original_sf2, temp_dir)
     decompiler.decompile()
     elapsed = time.time() - start
     print(f"Decompile time: {elapsed:.2f} seconds")

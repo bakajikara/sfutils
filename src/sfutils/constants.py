@@ -4,7 +4,7 @@
 # See the LICENSE file in the project root for the full license text.
 
 """
-SF2 Constants - Common constant definitions used in SoundFont2 files
+SoundFont Constants - Common constant definitions used in SoundFont files
 
 Defines constants used by both the compiler and the decompiler.
 """
