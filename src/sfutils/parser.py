@@ -206,8 +206,11 @@ class SF2Parser:
                 break
             chunk = data[i:i + record_size]
             name_bytes = chunk[0:20]
-            # Skip terminator record
+            # Skip terminator record (either standard terminator or empty name)
             if name_bytes.startswith(terminator):
+                break
+            # Also check for empty/null-only name (sf3convert compatibility)
+            if name_bytes.rstrip(b'\x00') == b'':
                 break
             records.append(chunk)
         return records
