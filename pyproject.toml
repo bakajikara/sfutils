@@ -17,3 +17,6 @@ dependencies = [
 
 [project.scripts]
 sfutils = "sfutils.cli:main"
+
+[tool.setuptools.files]
+exclude = [".gitattributes", ".gitignore", "tests/", "tools/"]
