@@ -3,7 +3,7 @@
 特定の差異を詳しく調査するツール
 """
 
-from sf2_constants import GENERATOR_NAMES
+from sfutils.constants import GENERATOR_NAMES
 import struct
 import sys
 from pathlib import Path
