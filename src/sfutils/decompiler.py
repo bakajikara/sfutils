@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+# Copyright (c) 2025 bakajikara
+#
+# This file is licensed under the MIT License (MIT).
+# See the LICENSE file in the project root for the full license text.
+
 """
 SF2 Decompiler - Decompiles a SoundFont2 file into a directory structure.
 
