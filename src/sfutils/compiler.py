@@ -589,17 +589,21 @@ class SoundFontCompiler(ABC):
 
         smpl_start = f.tell()
 
+        # Pre-process all samples in parallel
+        total_samples = len(self.samples)
+        print(f"  Processing {total_samples} samples...")
+
+        audio_cache = self._preprocess_samples_parallel()
+
         # Write sample data sequentially with progress display
         padding = self._get_sample_padding_bytes()
         current_offset = 0
-        total_samples = len(self.samples)
 
-        print(f"  Writing {total_samples} samples to SoundFont...")
+        print(f"  Writing samples to SoundFont...")
 
         for idx, sample in enumerate(self.samples, 1):
-            # Read audio data only when needed, passing channel info
-            channel = sample.get("_channel")
-            audio_data, sample_rate, num_samples = self._read_audio_data(sample["_audio_path"], channel)
+            # Get pre-processed audio data from cache
+            audio_data, sample_rate, num_samples = audio_cache[idx - 1]
 
             # Store sample rate
             sample["_sample_rate"] = sample_rate
@@ -641,6 +645,44 @@ class SoundFontCompiler(ABC):
 
         # Return file pointer to the end
         f.seek(list_end)
+
+    def _preprocess_samples_parallel(self):
+        """
+        Pre-processes all samples in parallel (encoding/reading audio data).
+        Returns a list of (audio_data, sample_rate, num_samples) tuples.
+        """
+        total_samples = len(self.samples)
+        audio_cache = [None] * total_samples
+
+        with ThreadPoolExecutor() as executor:
+            # Submit all tasks and map futures to their index
+            future_to_index = {
+                executor.submit(
+                    self._read_audio_data,
+                    sample["_audio_path"],
+                    sample.get("_channel")
+                ): idx
+                for idx, sample in enumerate(self.samples)
+            }
+
+            # Collect results with their original indices
+            for completed, future in enumerate(as_completed(future_to_index), 1):
+                try:
+                    result = future.result()
+                    idx = future_to_index[future]
+                    audio_cache[idx] = result
+
+                    # Show progress inline
+                    progress = (completed / total_samples) * 100
+                    print(f"    Encoding: {completed}/{total_samples} ({progress:.1f}%)", end="\r")
+                except Exception as e:
+                    idx = future_to_index[future]
+                    sample_name = self.samples[idx].get("sample_name", "unknown")
+                    print(f"\n  ERROR processing sample {idx} ({sample_name}): {e}")
+                    raise
+
+        print()  # Newline after progress
+        return audio_cache
 
     def _build_shdr_chunk(self):
         """
@@ -1130,7 +1172,7 @@ class _SF3Compiler(SoundFontCompiler):
             process = (
                 ffmpeg
                 .input("pipe:", format="f32le", acodec="pcm_f32le", ar=str(samplerate), ac=1)
-                .output(tmp_output_path, acodec="libvorbis", **{"q:a": quality})
+                .output(tmp_output_path, acodec="libvorbis", **{"q:a": quality, "threads": 1})
                 .overwrite_output()
                 .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True, quiet=True)
             )
