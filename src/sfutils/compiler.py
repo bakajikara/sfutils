@@ -29,6 +29,13 @@ except ImportError:
     print("Install it with: pip install soundfile")
     sys.exit(1)
 
+try:
+    import ffmpeg
+except ImportError:
+    print("Error: ffmpeg-python library is required for SF3 compilation.")
+    print("Install it with: pip install ffmpeg-python")
+    sys.exit(1)
+
 from .constants import GENERATOR_IDS, SF_SAMPLETYPE_VORBIS
 
 
@@ -1086,7 +1093,7 @@ class _SF3Compiler(SoundFontCompiler):
 
     def _encode_to_ogg_vorbis(self, audio_path, channel=None):
         """
-        Encodes an audio file to Ogg Vorbis format.
+        Encodes an audio file to Ogg Vorbis format using ffmpeg.
 
         Args:
             audio_path: The path to the audio file.
@@ -1108,24 +1115,46 @@ class _SF3Compiler(SoundFontCompiler):
 
         num_samples = len(data)
 
-        # Create a temporary file to write Ogg Vorbis data
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
-            tmp_path = tmp_file.name
+        # Convert float32 numpy array to bytes (no conversion needed)
+        audio_bytes = data.tobytes()
+
+        # Create temporary output file
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_output:
+            tmp_output_path = tmp_output.name
 
         try:
-            # Write to Ogg Vorbis format with specified quality
-            sf.write(tmp_path, data, samplerate, format="OGG", subtype="VORBIS", compression_level=self.ogg_quality)
+            # Convert to Ogg Vorbis using ffmpeg with pipe input
+            # Quality setting: 0-10 scale, convert from 0.0-1.0 to 0-10
+            quality = int(self.ogg_quality * 10)
+
+            process = (
+                ffmpeg
+                .input("pipe:", format="f32le", acodec="pcm_f32le", ar=str(samplerate), ac=1)
+                .output(tmp_output_path, acodec="libvorbis", **{"q:a": quality})
+                .overwrite_output()
+                .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True, quiet=True)
+            )
+
+            # Write float32 audio data to ffmpeg stdin and get output
+            stdout, stderr = process.communicate(input=audio_bytes)
+
+            if process.returncode != 0:
+                stderr_text = stderr.decode() if stderr else "Unknown error"
+                raise ValueError(f"ffmpeg failed with return code {process.returncode}: {stderr_text}")
 
             # Read back the encoded Ogg Vorbis data
-            with open(tmp_path, "rb") as f:
+            with open(tmp_output_path, "rb") as f:
                 ogg_data = f.read()
 
             return ogg_data, samplerate, num_samples
-
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"Failed to encode audio with ffmpeg: {e}")
         finally:
             # Clean up temporary file
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            if os.path.exists(tmp_output_path):
+                os.unlink(tmp_output_path)
 
 
 def main():
