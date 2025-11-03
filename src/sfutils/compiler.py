@@ -122,9 +122,14 @@ class SoundFontCompiler(ABC):
     Compiles a SoundFont file from an expanded directory structure.
     """
 
-    def __new__(cls, input_dir, output_sf):
+    def __new__(cls, input_dir, output_sf, quality=None):
         """
         Factory method to create a SoundFontCompiler instance.
+
+        Args:
+            input_dir: The input directory path.
+            output_sf: The output SoundFont file path.
+            quality: Ogg Vorbis quality (0.0-1.0, only for SF3). Default is 0.8.
         """
         # Determine subclass based on output file extension
         ext = Path(output_sf).suffix.lower()
@@ -135,13 +140,14 @@ class SoundFontCompiler(ABC):
 
         return instance
 
-    def __init__(self, input_dir, output_sf):
+    def __init__(self, input_dir, output_sf, quality=None):
         """
         Initializes the SoundFont Compiler.
 
         Args:
             input_dir: The input directory path.
             output_sf: The output SoundFont file path.
+            quality: Ogg Vorbis quality (0.0-1.0, only for SF3). Default is 0.8.
         """
         self.input_dir = Path(input_dir)
         self.output_sf = output_sf
@@ -1004,7 +1010,7 @@ class _SF2Compiler(SoundFontCompiler):
 
         SF2 uses sample units (not bytes) for all positions.
         Loop positions are absolute offsets from the start of smpl chunk.
-        
+
         Args:
             sample: The sample dictionary to update.
             current_offset: The current offset in sample units.
@@ -1012,7 +1018,7 @@ class _SF2Compiler(SoundFontCompiler):
         """
         # Calculate sample length from data_length (16-bit samples = 2 bytes per sample)
         num_samples = data_length // 2
-        
+
         # Use absolute positions calculated from current offset
         sample["_absolute_start"] = current_offset
         sample["_absolute_end"] = current_offset + num_samples
@@ -1025,17 +1031,23 @@ class _SF3Compiler(SoundFontCompiler):
     Compiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def __init__(self, input_dir, output_sf):
+    def __init__(self, input_dir, output_sf, quality=None):
         """
         Initializes the SF3 Compiler.
 
         Args:
             input_dir: The input directory path.
             output_sf: The output SoundFont file path.
+            quality: Ogg Vorbis quality (0.0-1.0). Default is 0.8.
         """
-        super().__init__(input_dir, output_sf)
+        super().__init__(input_dir, output_sf, quality)
         # Ogg Vorbis quality setting (0.0 to 1.0)
-        self.ogg_quality = 0.8
+        if quality is not None:
+            if not 0.0 <= quality <= 1.0:
+                raise ValueError(f"Quality must be between 0.0 and 1.0, got {quality}")
+            self.ogg_quality = quality
+        else:
+            self.ogg_quality = 0.8
 
     def _get_sample_padding_bytes(self):
         """
@@ -1141,7 +1153,7 @@ class _SF3Compiler(SoundFontCompiler):
 
         SF3 uses byte offsets for start/end positions.
         Loop positions are relative to the sample start (already stored in metadata).
-        
+
         Args:
             sample: The sample dictionary to update.
             current_offset: The current offset in bytes.
