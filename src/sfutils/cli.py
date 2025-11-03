@@ -17,6 +17,7 @@ entry points (they must be callables taking no arguments).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -30,12 +31,12 @@ def _build_root_parser():
     sub = p.add_subparsers(dest="command", required=True)
 
     c_compile = sub.add_parser("compile", help="Compile a directory into a SoundFont file")
-    c_compile.add_argument("input_dir", help="Input directory with info.json, samples/, instruments/, presets/")
-    c_compile.add_argument("output_sf", help="Output SoundFont file path")
+    c_compile.add_argument("input_directory", help="Input directory with info.json, samples/, instruments/, presets/")
+    c_compile.add_argument("output_file", nargs="?", help="Output SoundFont file path (default: <input_dir_name>.sf2 or .sf3 based on info.json)")
 
     c_decompile = sub.add_parser("decompile", help="Decompile a SoundFont file into a directory")
-    c_decompile.add_argument("sf_path", help="Input SoundFont file path")
-    c_decompile.add_argument("output_dir", help="Output directory to create")
+    c_decompile.add_argument("input_file", help="Input SoundFont file path")
+    c_decompile.add_argument("output_directory", nargs="?", help="Output directory to create (default: same name as input file)")
 
     return p
 
@@ -52,15 +53,57 @@ def main(argv=None):
 
     try:
         if args.command == "compile":
-            inp = Path(args.input_dir)
-            out = args.output_sf
-            compiler = SoundFontCompiler(inp, out)
+            inp = Path(args.input_directory)
+
+            # Determine output file if not specified
+            if args.output_file:
+                out = Path(args.output_file)
+            else:
+                # Read info.json to determine format
+                info_path = inp / "info.json"
+                if not info_path.exists():
+                    raise FileNotFoundError(f"info.json not found in {inp}")
+
+                with open(info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+
+                # Determine extension based on version
+                version = info.get("version", "2.01")
+                major_version = int(version.split(".")[0])
+                ext = ".sf3" if major_version >= 3 else ".sf2"
+
+                out = inp.with_suffix(ext)
+
+            # Warn if output file exists
+            if out.exists():
+                response = input(f"Warning: \"{out}\" already exists. Overwrite? (y/n): ")
+                if response.lower() != "y":
+                    print("Compilation cancelled.")
+                    return 0
+
+            compiler = SoundFontCompiler(inp, str(out))
             compiler.compile()
+
         elif args.command == "decompile":
-            sf = Path(args.sf_path)
-            outdir = Path(args.output_dir)
+            sf = Path(args.input_file)
+
+            # Determine output directory if not specified
+            if args.output_directory:
+                outdir = Path(args.output_directory)
+            else:
+                # Use the stem of the input file
+                outdir = sf.with_suffix("")
+
+            # Warn if output directory exists
+            if outdir.exists():
+                response = input(f"Warning: \"{outdir}\" already exists. Overwrite? (y/n): ")
+                if response.lower() != "y":
+                    print("Decompilation cancelled.")
+                    return 0
+
             decompiler = SoundFontDecompiler(sf, outdir)
             decompiler.decompile()
+
         else:
             parser.print_help()
             return 2
