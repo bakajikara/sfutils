@@ -56,7 +56,7 @@ class SF2EquivalenceChecker:
         print()
 
         self._check_info(data1["info"], data2["info"])
-        self._check_samples(data1["samples"], data2["samples"], data1["sample_data"], data2["sample_data"])
+        self._check_samples(data1["samples"], data2["samples"], data1["smpl_data"], data2["smpl_data"], data1["sm24_data"], data2["sm24_data"])
         self._check_instruments(data1["instruments"], data2["instruments"], data1["samples"], data2["samples"])
         self._check_presets(data1["presets"], data2["presets"], data1["instruments"], data2["instruments"])
 
@@ -102,7 +102,8 @@ class SF2EquivalenceChecker:
                 # Data structure
                 data = {
                     "info": {},
-                    "sample_data": b"",
+                    "smpl_data": b"",
+                    "sm24_data": b"",
                     "samples": [],
                     "instruments": [],
                     "presets": [],
@@ -121,7 +122,7 @@ class SF2EquivalenceChecker:
                     if list_type == b"INFO":
                         data["info"] = self._parse_info_chunk(f, chunk_end)
                     elif list_type == b"sdta":
-                        data["sample_data"] = self._parse_sdta_chunk(f, chunk_end)
+                        data["smpl_data"], data["sm24_data"] = self._parse_sdta_chunk(f, chunk_end)
                     elif list_type == b"pdta":
                         data["pdta_raw"] = self._parse_pdta_chunk(f, chunk_end)
 
@@ -163,7 +164,8 @@ class SF2EquivalenceChecker:
 
     def _parse_sdta_chunk(self, f, chunk_end):
         """Parse the sdta chunk (sample data)"""
-        sample_data = b""
+        smpl_data = b""
+        sm24_data = b""
         while f.tell() < chunk_end:
             sub_id = f.read(4)
             if len(sub_id) < 4:
@@ -171,14 +173,16 @@ class SF2EquivalenceChecker:
             sub_size = struct.unpack("<I", f.read(4))[0]
 
             if sub_id == b"smpl":
-                sample_data = f.read(sub_size)
+                smpl_data = f.read(sub_size)
+            elif sub_id == b"sm24":
+                sm24_data = f.read(sub_size)
             else:
                 f.read(sub_size)
 
             if sub_size % 2:
                 f.read(1)
 
-        return sample_data
+        return smpl_data, sm24_data
 
     def _parse_pdta_chunk(self, f, chunk_end):
         """Parse the pdta chunk"""
@@ -409,7 +413,7 @@ class SF2EquivalenceChecker:
 
         print("  ✓ INFO check complete")
 
-    def _check_samples(self, samples1, samples2, data1, data2):
+    def _check_samples(self, samples1, samples2, data1, data2, sm24_data1, sm24_data2):
         """Check samples (ignore order)"""
         print("Checking samples...")
 
@@ -417,13 +421,24 @@ class SF2EquivalenceChecker:
             self.errors.append(f"Sample count mismatch: {len(samples1)} != {len(samples2)}")
 
         # Map samples by audio data (ignore order)
-        def extract_sample_data(sample, data):
-            """Extract PCM data for a sample"""
+        def extract_sample_data(sample, data, sm24_data):
+            """Extract PCM data for a sample (including sm24 if present)"""
             start = sample["start"] * 2  # 16-bit = 2 bytes
             end = sample["end"] * 2
             if end > len(data):
                 end = len(data)
-            return data[start:end]
+            pcm16 = data[start:end]
+
+            # Extract sm24 data if present
+            if sm24_data:
+                sm24_start = sample["start"]  # sm24 is 1 byte per sample
+                sm24_end = sample["end"]
+                if sm24_end > len(sm24_data):
+                    sm24_end = len(sm24_data)
+                sm24 = sm24_data[sm24_start:sm24_end]
+                return pcm16 + sm24  # Combine for comparison
+
+            return pcm16
 
         # Index file1 samples by PCM data
         import hashlib
@@ -431,7 +446,7 @@ class SF2EquivalenceChecker:
         samples1_hashes = {}  # idx -> hash (used later)
 
         for idx, sample in enumerate(samples1):
-            pcm = extract_sample_data(sample, data1)
+            pcm = extract_sample_data(sample, data1, sm24_data1)
             # Use a hash for memory efficiency
             pcm_hash = hashlib.md5(pcm).hexdigest()
             samples1_by_audio[pcm_hash] = (idx, sample, pcm)
@@ -443,7 +458,7 @@ class SF2EquivalenceChecker:
         samples2_hashes = {}  # idx -> hash (used later)
 
         for idx2, sample2 in enumerate(samples2):
-            pcm2 = extract_sample_data(sample2, data2)
+            pcm2 = extract_sample_data(sample2, data2, sm24_data2)
             pcm2_hash = hashlib.md5(pcm2).hexdigest()
             samples2_hashes[idx2] = pcm2_hash
 
