@@ -29,14 +29,26 @@ except ImportError:
     print("Install it with: pip install soundfile")
     sys.exit(1)
 
-try:
-    import ffmpeg
-except ImportError:
-    print("Error: ffmpeg-python library is required for SF3 compilation.")
-    print("Install it with: pip install ffmpeg-python")
-    sys.exit(1)
-
 from .constants import GENERATOR_IDS, SF_SAMPLETYPE_VORBIS
+
+# ffmpeg is only required for SF3 compilation from non-OGG sources
+# Import it conditionally when needed
+_ffmpeg_available = None
+
+
+def _check_ffmpeg():
+    """
+    Checks if ffmpeg-python is available.
+    Returns True if available, False otherwise.
+    """
+    global _ffmpeg_available
+    if _ffmpeg_available is None:
+        try:
+            import ffmpeg
+            _ffmpeg_available = True
+        except ImportError:
+            _ffmpeg_available = False
+    return _ffmpeg_available
 
 
 def make_chunk(chunk_id, data):
@@ -1146,6 +1158,16 @@ class _SF3Compiler(SoundFontCompiler):
         Returns:
             Tuple of (ogg_data_bytes, sample_rate, num_samples)
         """
+        # Check if ffmpeg is available
+        if not _check_ffmpeg():
+            raise ImportError(
+                "ffmpeg-python library is required for encoding non-OGG files to Ogg Vorbis.\n"
+                "Install it with: pip install ffmpeg-python\n"
+                "FFmpeg must also be installed on your system."
+            )
+
+        import ffmpeg
+
         # Read audio data to get metadata and separate channels if needed
         data, samplerate = sf.read(audio_path, dtype="float64")
 
