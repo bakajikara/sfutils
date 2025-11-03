@@ -15,7 +15,7 @@ from pathlib import Path
 def load_json_file(filepath):
     """JSONファイルを読み込む"""
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         print(f"警告: {filepath} の読み込みに失敗: {e}")
@@ -29,8 +29,8 @@ def extract_sample_references(data, referenced_samples):
     """
     if isinstance(data, dict):
         # sample フィールドを探す（新フォーマット）
-        if 'sample' in data:
-            sample_name = data['sample']
+        if "sample" in data:
+            sample_name = data["sample"]
             referenced_samples.add(sample_name)
 
         # 再帰的に辞書内を探索
@@ -139,7 +139,7 @@ def check_unreferenced_files(root_dir):
         # サイズを計算（オプション）
         total_size = 0
         for sample_name, _ in unreferenced_samples:
-            for ext in ['.flac', '.json']:
+            for ext in [".flac", ".json"]:
                 filepath = samples_dir / f"{sample_name}{ext}"
                 if filepath.exists():
                     total_size += filepath.stat().st_size
