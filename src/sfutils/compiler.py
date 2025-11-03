@@ -140,12 +140,17 @@ class SoundFontCompiler(ABC):
         self.instruments = []
         self.presets = []
 
+        # Parsed SoundFont version
+        self.sf_major_version = 0
+        self.sf_minor_version = 0
+
     @abstractmethod
     def _get_sample_padding_bytes(self):
         """
-        Returns the padding bytes to add between samples.
-        SF2 uses PCM padding (46 samples * 2 bytes = 92 bytes).
-        SF3 uses no padding.
+        Returns the padding bytes to add between samples for both smpl and sm24.
+
+        Returns:
+            A tuple of (smpl_padding_bytes, sm24_padding_bytes).
         """
         pass
 
@@ -244,6 +249,16 @@ class SoundFontCompiler(ABC):
         with open(info_path, "r", encoding="utf-8") as f:
             self.bank_info = json.load(f)
 
+        # Parse and store the version for later use
+        # Use format-specific major version (2 for SF2, 3 for SF3)
+        # and minor version from info.json
+        default_version = self._get_default_soundfont_version()
+        major, _ = map(int, default_version.split("."))
+        version = self.bank_info.get("version", default_version)
+        _, minor = map(int, version.split("."))
+        self.sf_major_version = major
+        self.sf_minor_version = minor
+
         print(f"  Loaded: info.json")
 
     def _load_samples(self):
@@ -309,7 +324,7 @@ class SoundFontCompiler(ABC):
 
         # Find the corresponding audio file path (FLAC, WAV, etc.)
         audio_path = None
-        for ext in [".flac", ".wav", ".ogg", ".aiff", ".aif"]:
+        for ext in [".flac", ".wav", ".ogg", ".oga", "mp3"]:
             candidate = json_path.with_suffix(ext)
             if candidate.exists():
                 audio_path = candidate
@@ -517,13 +532,17 @@ class SoundFontCompiler(ABC):
 
             # INFO-list
             info_chunk = self._build_info_chunk()
+            print("  Writing INFO chunk...")
             f.write(info_chunk)
 
-            # sdta-list (written directly for memory efficiency)
-            self._write_sdta_chunk_direct(f)
+            # sdta-list
+            sdta_chunk = self._build_sdta_chunk()
+            print("  Writing sample data...")
+            f.write(sdta_chunk)
 
             # pdta-list
             pdta_chunk = self._build_pdta_chunk()
+            print("  Writing pdta chunk...")
             f.write(pdta_chunk)
 
             # Update RIFF size
@@ -536,14 +555,9 @@ class SoundFontCompiler(ABC):
         Builds the INFO-list chunk.
         """
         data = b""
+
         # Version info (required, first)
-        # Use format-specific major version (2 for SF2, 3 for SF3)
-        # and minor version from info.json
-        default_version = self._get_default_soundfont_version()
-        major, _ = default_version.split(".")
-        version = self.bank_info.get("version", default_version)
-        _, minor = version.split(".")
-        ifil_data = struct.pack("<HH", int(major), int(minor))
+        ifil_data = struct.pack("<HH", self.sf_major_version, self.sf_minor_version)
         data += make_chunk(b"ifil", ifil_data)
 
         # Sound engine (required, second)
@@ -572,79 +586,35 @@ class SoundFontCompiler(ABC):
         # Wrap as a LIST chunk
         return make_list_chunk(b"INFO", data)
 
-    def _write_sdta_chunk_direct(self, f):
+    def _build_sdta_chunk(self):
         """
-        Writes the sdta-list chunk directly to the file for memory efficiency.
+        Builds the complete LIST sdta chunk from the raw sample data buffers.
+
+        Returns:
+            The complete LIST sdta chunk as a bytes object.
         """
-        # LIST chunk header
-        f.write(b"LIST")
-        list_size_pos = f.tell()
-        f.write(struct.pack("<I", 0))
-        f.write(b"sdta")
-
-        # smpl chunk header
-        f.write(b"smpl")
-        smpl_size_pos = f.tell()
-        f.write(struct.pack("<I", 0))
-
-        smpl_start = f.tell()
-
-        # Pre-process all samples in parallel
-        total_samples = len(self.samples)
-        print(f"  Processing {total_samples} samples...")
-
+        # Trigger parallel pre-processing of all audio samples
         audio_cache = self._preprocess_samples_parallel()
 
-        # Write sample data sequentially with progress display
-        padding = self._get_sample_padding_bytes()
-        current_offset = 0
+        # Build the raw sample data buffers (smpl and sm24)
+        final_smpl_data_bytes, final_sm24_data_bytes = self._build_sample_data_buffers(audio_cache)
 
-        print(f"  Writing samples to SoundFont...")
+        sdta_content = b""
 
-        for idx, sample in enumerate(self.samples, 1):
-            # Get pre-processed audio data from cache
-            audio_data, sample_rate, num_samples = audio_cache[idx - 1]
+        # Create the smpl sub-chunk
+        sdta_content += make_chunk(b"smpl", final_smpl_data_bytes)
 
-            # Store sample rate
-            sample["_sample_rate"] = sample_rate
+        # Create the sm24 sub-chunk only if there is 24-bit data and version supports it
+        if any(final_sm24_data_bytes):
+            if self.sf_major_version == 2 and self.sf_minor_version >= 4:
+                sdta_content += make_chunk(b"sm24", final_sm24_data_bytes)
+            else:
+                # This case occurs if there is 24-bit data but the target version is < 2.04
+                print(f"  Warning: 24-bit sample data found, but target version is {self.sf_major_version}.{self.sf_minor_version:02d}. "
+                      "The sm24 chunk will NOT be written, and samples will be truncated to 16-bit.")
 
-            # Calculate absolute positions (format-specific)
-            self._calculate_sample_positions(sample, current_offset, len(audio_data))
-
-            # Write data
-            f.write(audio_data)
-            f.write(padding)
-
-            # Update offset for the next sample
-            current_offset = self._update_sample_offset(current_offset, num_samples, len(audio_data))
-
-            # Show progress inline
-            progress = (idx / total_samples) * 100
-            print(f"    Progress: {idx}/{total_samples} ({progress:.1f}%)", end="\r")
-
-        print()  # Newline after progress
-
-        # Calculate and update sizes
-        smpl_end = f.tell()
-        smpl_size = smpl_end - smpl_start
-
-        # Update smpl chunk size
-        f.seek(smpl_size_pos)
-        f.write(struct.pack("<I", smpl_size))
-
-        # Add padding if size is odd
-        f.seek(smpl_end)
-        if smpl_size % 2:
-            f.write(b"\x00")
-
-        # Update LIST chunk size
-        list_end = f.tell()
-        list_size = list_end - list_size_pos - 4
-        f.seek(list_size_pos)
-        f.write(struct.pack("<I", list_size))
-
-        # Return file pointer to the end
-        f.seek(list_end)
+        # Wrap everything in a LIST chunk
+        return make_list_chunk(b"sdta", sdta_content)
 
     def _preprocess_samples_parallel(self):
         """
@@ -652,6 +622,8 @@ class SoundFontCompiler(ABC):
         Returns a list of (audio_data, sample_rate, num_samples) tuples.
         """
         total_samples = len(self.samples)
+        print(f"  Processing {total_samples} samples...")
+
         audio_cache = [None] * total_samples
 
         with ThreadPoolExecutor() as executor:
@@ -683,6 +655,41 @@ class SoundFontCompiler(ABC):
 
         print()  # Newline after progress
         return audio_cache
+
+    def _build_sample_data_buffers(self, audio_cache):
+        """
+        Iterates through cached samples to build the raw data buffers for smpl and sm24.
+        This method also calculates and updates the absolute positions within self.samples.
+
+        Args:
+            audio_cache: A list of pre-processed audio data tuples.
+
+        Returns:
+            A tuple containing (final_smpl_data_bytes, final_sm24_data_bytes).
+        """
+        all_smpl_data_parts = []
+        all_sm24_data_parts = []
+
+        smpl_padding, sm24_padding = self._get_sample_padding_bytes()
+        current_offset = 0
+
+        print(f"  Building sample data buffers...")
+        for idx, sample in enumerate(self.samples):
+            smpl_data, sm24_data, sample_rate, num_samples = audio_cache[idx]
+
+            sample["_sample_rate"] = sample_rate
+            self._calculate_sample_positions(sample, current_offset, len(smpl_data))
+
+            all_smpl_data_parts.append(smpl_data)
+            all_smpl_data_parts.append(smpl_padding)
+
+            if sm24_data is not None:
+                all_sm24_data_parts.append(sm24_data)
+                all_sm24_data_parts.append(sm24_padding)
+
+            current_offset = self._update_sample_offset(current_offset, num_samples, len(smpl_data))
+
+        return b"".join(all_smpl_data_parts), b"".join(all_sm24_data_parts)
 
     def _build_shdr_chunk(self):
         """
@@ -888,9 +895,11 @@ class _SF2Compiler(SoundFontCompiler):
 
     def _get_sample_padding_bytes(self):
         """
-        Returns PCM padding bytes for SF2.
+        Returns PCM padding bytes for SF2 (92 bytes for smpl, 46 bytes for sm24).
         """
-        return b"\x00" * self.SAMPLE_PADDING * 2
+        smpl_padding = b"\x00" * self.SAMPLE_PADDING * 2  # 16-bit samples
+        sm24_padding = b"\x00" * self.SAMPLE_PADDING      # 8-bit counterparts
+        return smpl_padding, sm24_padding
 
     def _update_sample_offset(self, current_offset, num_samples, data_length):
         """
@@ -922,7 +931,7 @@ class _SF2Compiler(SoundFontCompiler):
 
         name_bytes = name.ljust(20, "\x00").encode("ascii")
 
-        # Use absolute positions calculated in _write_sdta_chunk_direct
+        # Use absolute positions calculated earlier
         start = sample.get("_absolute_start", 0)
         end = sample.get("_absolute_end", 0)
         start_loop = sample.get("_absolute_start_loop", 0)
@@ -958,8 +967,8 @@ class _SF2Compiler(SoundFontCompiler):
             Tuple of (pcm_data_bytes, sample_rate, num_samples)
         """
         try:
-            # Read with soundfile (supports FLAC, WAV, OGG, AIFF, etc.)
-            data, samplerate = sf.read(audio_path, dtype="int16")
+            # Read as int32 with soundfile
+            data, samplerate = sf.read(audio_path, dtype="int32")
 
             # Separate channels
             if channel == "left":
@@ -969,11 +978,17 @@ class _SF2Compiler(SoundFontCompiler):
                 if len(data.shape) == 2:
                     data = data[:, 1]
 
-            # Convert NumPy array to bytes
-            pcm_bytes = data.tobytes()
-            num_samples = len(pcm_bytes) // 2
+            # Convert to 24-bit PCM
+            data >>= 8
 
-            return pcm_bytes, samplerate, num_samples
+            # MSB 16 bits for the "smpl" chunk (as signed 16-bit)
+            smpl_data = (data >> 8).astype("int16").tobytes()
+            # LSB 8 bits for the "sm24" chunk (as unsigned 8-bit)
+            sm24_data = (data & 0xFF).astype("uint8").tobytes()
+
+            num_samples = len(smpl_data) // 2
+
+            return smpl_data, sm24_data, samplerate, num_samples
         except Exception as e:
             raise ValueError(f"Failed to read audio file {audio_path}: {e}")
 
@@ -984,10 +999,6 @@ class _SF2Compiler(SoundFontCompiler):
         SF2 uses sample units (not bytes) for all positions.
         Loop positions are absolute offsets from the start of smpl chunk.
         """
-        # SF2: current_offset is in sample units
-        # data_length is in bytes, convert to samples
-        num_samples = data_length // 2
-
         # Use absolute positions calculated from metadata
         sample["_absolute_start"] = current_offset + sample["start"]
         sample["_absolute_end"] = current_offset + sample["end"]
@@ -999,9 +1010,6 @@ class _SF3Compiler(SoundFontCompiler):
     """
     Compiler for SF3 files (Ogg Vorbis audio).
     """
-
-    # Padding between samples in bytes (no specific requirement for Ogg Vorbis)
-    BYTE_PADDING = 0
 
     def __init__(self, input_dir, output_sf):
         """
@@ -1017,16 +1025,16 @@ class _SF3Compiler(SoundFontCompiler):
 
     def _get_sample_padding_bytes(self):
         """
-        Returns byte padding for SF3 (Ogg Vorbis).
+        Returns empty padding bytes for SF3, as no padding is required.
         """
-        return b"\x00" * self.BYTE_PADDING
+        return b"", b""
 
     def _update_sample_offset(self, current_offset, num_samples, data_length):
         """
         Updates the sample offset in bytes for SF3.
         For Ogg Vorbis, offsets are in bytes, not sample units.
         """
-        return current_offset + data_length + self.BYTE_PADDING
+        return current_offset + data_length
 
     def _get_default_soundfont_version(self):
         """
@@ -1082,13 +1090,6 @@ class _SF3Compiler(SoundFontCompiler):
             sample_type
         )
 
-    def _update_sample_offset(self, current_offset, num_samples, data_length):
-        """
-        Updates the sample offset in bytes for SF3.
-        For Ogg Vorbis, offsets are in bytes, not sample units.
-        """
-        return current_offset + data_length + self.BYTE_PADDING
-
     def _read_audio_data(self, audio_path, channel=None):
         """
         Reads Ogg Vorbis data from an audio file when needed.
@@ -1112,10 +1113,11 @@ class _SF3Compiler(SoundFontCompiler):
                 sample_rate = info.samplerate
                 num_samples = info.frames
 
-                return ogg_data, sample_rate, num_samples
+                return ogg_data, None, sample_rate, num_samples
             else:
                 # If not .ogg, read as PCM and encode to Ogg Vorbis
-                return self._encode_to_ogg_vorbis(audio_path, channel)
+                ogg_data, samplerate, num_samples = self._encode_to_ogg_vorbis(audio_path, channel)
+                return ogg_data, None, samplerate, num_samples
         except Exception as e:
             raise ValueError(f"Failed to read audio file {audio_path}: {e}")
 
