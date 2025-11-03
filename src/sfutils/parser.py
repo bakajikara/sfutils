@@ -50,8 +50,8 @@ class SoundFontParser:
         self.filepath = filepath
         self.file = None
         self.info_data = {}
-        self.sample_data = b""
-        self.sample_data_24 = b""
+        self.smpl_data = b""
+        self.sm24_data = b""
         self.pdta = {}
 
         # Caching for parsed data
@@ -191,10 +191,10 @@ class SoundFontParser:
             sub_id, sub_size = read_chunk_header(self.file)
             if sub_id == b"smpl":
                 # 16-bit sample data
-                self.sample_data = self.file.read(sub_size)
+                self.smpl_data = self.file.read(sub_size)
             elif sub_id == b"sm24":
                 # 24-bit LSB sample data
-                self.sample_data_24 = self.file.read(sub_size)
+                self.sm24_data = self.file.read(sub_size)
             else:
                 # Skip unknown chunks
                 self.file.seek(sub_size, 1)

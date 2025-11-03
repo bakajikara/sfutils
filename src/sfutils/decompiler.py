@@ -120,13 +120,14 @@ class SoundFontDecompiler(ABC):
         samples_dir.mkdir(exist_ok=True)
 
         sample_headers = self.parser.get_sample_headers()
-        sample_data = self.parser.sample_data
+        smpl_data = self.parser.smpl_data
+        sm24_data = self.parser.sm24_data
 
         # Prepare tasks for parallel processing
         tasks = self._prepare_sample_tasks(sample_headers)
 
         # Process tasks in parallel
-        results = self._process_sample_tasks_parallel(tasks, samples_dir, sample_data, sample_headers)
+        results = self._process_sample_tasks_parallel(tasks, samples_dir, smpl_data, sm24_data, sample_headers)
 
         # Update filename mappings
         for result in results:
@@ -217,7 +218,7 @@ class SoundFontDecompiler(ABC):
 
         return tasks
 
-    def _process_sample_tasks_parallel(self, tasks, samples_dir, sample_data, sample_headers):
+    def _process_sample_tasks_parallel(self, tasks, samples_dir, smpl_data, sm24_data, sample_headers):
         """
         Processes sample tasks in parallel with progress display.
         """
@@ -238,7 +239,8 @@ class SoundFontDecompiler(ABC):
                     self._process_sample_task,
                     task,
                     samples_dir,
-                    sample_data,
+                    smpl_data,
+                    sm24_data,
                     sample_headers
                 ): task for task in tasks
             }
@@ -262,7 +264,7 @@ class SoundFontDecompiler(ABC):
 
         return results
 
-    def _process_sample_task(self, task, samples_dir, sample_data, sample_headers):
+    def _process_sample_task(self, task, samples_dir, smpl_data, sm24_data, sample_headers):
         """
         Processes a single sample task (mono or stereo).
         Returns a dict with filename and id_mapping.
@@ -275,7 +277,8 @@ class SoundFontDecompiler(ABC):
                 task["linked_header"],
                 task["filename"],
                 samples_dir,
-                sample_data
+                smpl_data,
+                sm24_data
             )
         else:
             return self._process_mono_sample(
@@ -283,18 +286,19 @@ class SoundFontDecompiler(ABC):
                 task["header"],
                 task["filename"],
                 samples_dir,
-                sample_data
+                smpl_data,
+                sm24_data
             )
 
     @abstractmethod
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample.
         """
         pass
 
     @abstractmethod
-    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
+    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample.
         """
@@ -456,7 +460,7 @@ class _SF2Decompiler(SoundFontDecompiler):
     Decompiler for SF2 files (PCM audio).
     """
 
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample from PCM data.
         """
@@ -467,10 +471,24 @@ class _SF2Decompiler(SoundFontDecompiler):
             else (linked_header, header, linked_idx, idx)
         )
 
+        left_data = smpl_data[left_h["start"] * 2:left_h["end"] * 2]
+        right_data = smpl_data[right_h["start"] * 2:right_h["end"] * 2]
+        left_data_24_lsb = sm24_data[left_h["start"]:left_h["end"]] if sm24_data else b""
+        right_data_24_lsb = sm24_data[right_h["start"]:right_h["end"]] if sm24_data else b""
+        is_24bit = any([left_data_24_lsb, right_data_24_lsb])
+
         # Left channel PCM data
-        left_pcm = np.frombuffer(sample_data[left_h["start"] * 2:left_h["end"] * 2], dtype=np.int16)
+        left_pcm = np.frombuffer(left_data, dtype=np.int16)
         # Right channel PCM data
-        right_pcm = np.frombuffer(sample_data[right_h["start"] * 2:right_h["end"] * 2], dtype=np.int16)
+        right_pcm = np.frombuffer(right_data, dtype=np.int16)
+
+        # Handle 24-bit LSB data if available
+        if is_24bit:
+            left_pcm_24_lsb = np.frombuffer(left_data_24_lsb, dtype=np.uint8)
+            left_pcm = (left_pcm.astype(np.int32) << 16) + (left_pcm_24_lsb.astype(np.int32) << 8)
+            right_pcm_24_lsb = np.frombuffer(right_data_24_lsb, dtype=np.uint8)
+            right_pcm = (right_pcm.astype(np.int32) << 16) + (right_pcm_24_lsb.astype(np.int32) << 8)
+
         # Align lengths (to the shorter one)
         min_len = min(len(left_pcm), len(right_pcm))
         # Create stereo array (samples, channels)
@@ -480,7 +498,7 @@ class _SF2Decompiler(SoundFontDecompiler):
         final_filename = filename
 
         # Write stereo FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_16")
+        sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
         # Save metadata to JSON (as relative positions)
         self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "stereo", left_h)
 
@@ -489,17 +507,26 @@ class _SF2Decompiler(SoundFontDecompiler):
             "id_mapping": {left_idx: final_filename, right_idx: final_filename}
         }
 
-    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
+    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample from PCM data.
         """
-        pcm_array = np.frombuffer(sample_data[header["start"] * 2:header["end"] * 2], dtype=np.int16)
+        audio_data = smpl_data[header["start"] * 2:header["end"] * 2]
+        audio_data_24_lsb = sm24_data[header["start"]:header["end"]] if sm24_data else b""
+        is_24bit = any(audio_data_24_lsb)
+
+        audio_pcm = np.frombuffer(audio_data, dtype=np.int16)
+
+        # Handle 24-bit LSB data if available
+        if is_24bit:
+            audio_pcm_24_lsb = np.frombuffer(audio_data_24_lsb, dtype=np.uint8)
+            audio_pcm = (audio_pcm.astype(np.int32) << 16) + (audio_pcm_24_lsb.astype(np.int32) << 8)
 
         # Use the provided unique filename
         final_filename = filename
 
         # Write mono FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", pcm_array, header["sample_rate"], subtype="PCM_16")
+        sf.write(samples_dir / f"{final_filename}.flac", audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
         # Save metadata to JSON (as relative positions)
         self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", header)
 
@@ -531,7 +558,7 @@ class _SF3Decompiler(SoundFontDecompiler):
     Decompiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, sample_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample from Ogg Vorbis data.
         TODO: Implement proper Ogg Vorbis stereo handling if needed.
@@ -543,8 +570,8 @@ class _SF3Decompiler(SoundFontDecompiler):
         )
 
         # Extract Ogg data for left and right channels
-        left_ogg = sample_data[left_h["start"]:left_h["end"]]
-        right_ogg = sample_data[right_h["start"]:right_h["end"]]
+        left_ogg = smpl_data[left_h["start"]:left_h["end"]]
+        right_ogg = smpl_data[right_h["start"]:right_h["end"]]
 
         final_filename = filename
 
@@ -566,11 +593,11 @@ class _SF3Decompiler(SoundFontDecompiler):
             "id_mapping": {left_idx: final_filename, right_idx: final_filename}
         }
 
-    def _process_mono_sample(self, idx, header, filename, samples_dir, sample_data):
+    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample from Ogg Vorbis data.
         """
-        ogg_data = sample_data[header["start"]:header["end"]]
+        ogg_data = smpl_data[header["start"]:header["end"]]
 
         final_filename = filename
 
