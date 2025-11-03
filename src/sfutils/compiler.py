@@ -1145,7 +1145,7 @@ class _SF3Compiler(SoundFontCompiler):
             Tuple of (ogg_data_bytes, sample_rate, num_samples)
         """
         # Read audio data to get metadata and separate channels if needed
-        data, samplerate = sf.read(audio_path, dtype="float32")
+        data, samplerate = sf.read(audio_path, dtype="float64")
 
         # Separate channels if needed
         if channel == "left":
@@ -1157,7 +1157,7 @@ class _SF3Compiler(SoundFontCompiler):
 
         num_samples = len(data)
 
-        # Convert float32 numpy array to bytes (no conversion needed)
+        # Convert float64 numpy array to bytes (no conversion needed)
         audio_bytes = data.tobytes()
 
         # Create temporary output file
@@ -1171,7 +1171,7 @@ class _SF3Compiler(SoundFontCompiler):
 
             process = (
                 ffmpeg
-                .input("pipe:", format="f32le", acodec="pcm_f32le", ar=str(samplerate), ac=1)
+                .input("pipe:", format="f64le", acodec="pcm_f64le", ar=str(samplerate), ac=1)
                 .output(tmp_output_path, acodec="libvorbis", **{"q:a": quality, "threads": 1})
                 .overwrite_output()
                 .run_async(pipe_stdin=True, pipe_stdout=True, pipe_stderr=True, quiet=True)
