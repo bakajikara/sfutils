@@ -538,12 +538,11 @@ class _SF2Decompiler(SoundFontDecompiler):
     def _write_sample_metadata(self, path, name, type, header):
         """
         Writes sample metadata to a JSON file.
+        Note: start/end are omitted as they will be calculated during compilation.
         """
         metadata = {
             "sample_name": name,
             "sample_type": type,
-            "start": 0,
-            "end": header["end"] - header["start"],
             "start_loop": header["start_loop"] - header["start"],
             "end_loop": header["end_loop"] - header["start"],
             "original_key": header["original_key"],
@@ -617,12 +616,12 @@ class _SF3Decompiler(SoundFontDecompiler):
     def _write_sample_metadata(self, path, name, type, header):
         """
         Writes sample metadata to a JSON file.
+        Note: start/end are omitted as they will be calculated during compilation.
+        For SF3, loop positions are stored as relative offsets from sample start.
         """
         metadata = {
             "sample_name": name,
             "sample_type": type,
-            "start": 0,
-            "end": header["end"] - header["start"],
             "start_loop": header["start_loop"],
             "end_loop": header["end_loop"],
             "original_key": header["original_key"],

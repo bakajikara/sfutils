@@ -355,10 +355,9 @@ class SoundFontCompiler(ABC):
     def _create_stereo_sample_entries(self, metadata, audio_path):
         """
         Creates stereo sample entries (left and right).
+        Note: start/end will be calculated dynamically during compilation.
         """
         # Stereo sample: split into two samples
-        start = metadata.get("start", 0)
-        end = metadata.get("end", 0)
         start_loop = metadata.get("start_loop", 0)
         end_loop = metadata.get("end_loop", 0)
         original_key = metadata.get("original_key", 60)
@@ -367,8 +366,6 @@ class SoundFontCompiler(ABC):
         # Left channel sample
         left_sample = {
             "sample_name": metadata["sample_name"],
-            "start": start,
-            "end": end,
             "start_loop": start_loop,
             "end_loop": end_loop,
             "original_key": original_key,
@@ -383,8 +380,6 @@ class SoundFontCompiler(ABC):
         # Right channel sample
         right_sample = {
             "sample_name": metadata["sample_name"],
-            "start": start,
-            "end": end,
             "start_loop": start_loop,
             "end_loop": end_loop,
             "original_key": original_key,
@@ -402,11 +397,10 @@ class SoundFontCompiler(ABC):
     def _create_mono_sample_entry(self, metadata, audio_path):
         """
         Creates a mono sample entry.
+        Note: start/end will be calculated dynamically during compilation.
         """
         return {
             "sample_name": metadata["sample_name"],
-            "start": metadata.get("start", 0),
-            "end": metadata.get("end", 0),
             "start_loop": metadata.get("start_loop", 0),
             "end_loop": metadata.get("end_loop", 0),
             "original_key": metadata.get("original_key", 60),
@@ -1010,10 +1004,18 @@ class _SF2Compiler(SoundFontCompiler):
 
         SF2 uses sample units (not bytes) for all positions.
         Loop positions are absolute offsets from the start of smpl chunk.
+        
+        Args:
+            sample: The sample dictionary to update.
+            current_offset: The current offset in sample units.
+            data_length: The length of the audio data in bytes.
         """
-        # Use absolute positions calculated from metadata
-        sample["_absolute_start"] = current_offset + sample["start"]
-        sample["_absolute_end"] = current_offset + sample["end"]
+        # Calculate sample length from data_length (16-bit samples = 2 bytes per sample)
+        num_samples = data_length // 2
+        
+        # Use absolute positions calculated from current offset
+        sample["_absolute_start"] = current_offset
+        sample["_absolute_end"] = current_offset + num_samples
         sample["_absolute_start_loop"] = current_offset + sample["start_loop"]
         sample["_absolute_end_loop"] = current_offset + sample["end_loop"]
 
@@ -1138,7 +1140,12 @@ class _SF3Compiler(SoundFontCompiler):
         Calculates absolute sample positions for SF3.
 
         SF3 uses byte offsets for start/end positions.
-        Loop positions are relative to the sample start.
+        Loop positions are relative to the sample start (already stored in metadata).
+        
+        Args:
+            sample: The sample dictionary to update.
+            current_offset: The current offset in bytes.
+            data_length: The length of the audio data in bytes.
         """
         # SF3: start and end are absolute byte offsets in smpl chunk
         sample["_absolute_start"] = current_offset
