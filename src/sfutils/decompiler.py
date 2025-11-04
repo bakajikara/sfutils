@@ -33,7 +33,7 @@ except ImportError:
     sys.exit(1)
 
 from .parser import SoundFontParser
-from .constants import GENERATOR_NAMES, SF_SAMPLETYPE_VORBIS
+from .constants import GENERATOR_NAMES
 
 
 def sanitize_filename(name):
@@ -167,7 +167,7 @@ class SoundFontDecompiler(ABC):
                         print(f"    WARNING: Invalid or broken stereo pair found for sample \"{header["name"]}\". Treating as a single channel.")
 
             if is_pair_valid:
-                # Prepare stereo task
+                # Prepare combined stereo task
                 linked_idx = header["sample_link"]
                 linked_header = sample_headers[linked_idx]
                 left_h, right_h = (header, linked_header) if header["sample_type"] & 4 else (linked_header, header)
@@ -188,7 +188,7 @@ class SoundFontDecompiler(ABC):
                     original_name = None
 
                 tasks.append({
-                    "type": "stereo",
+                    "type": "combined_stereo",
                     "idx": idx,
                     "header": header,
                     "linked_idx": linked_idx,
@@ -214,7 +214,7 @@ class SoundFontDecompiler(ABC):
                     original_name = None
 
                 tasks.append({
-                    "type": "mono",
+                    "type": "single_channel",
                     "idx": idx,
                     "header": header,
                     "basename": final_basename,
@@ -272,53 +272,73 @@ class SoundFontDecompiler(ABC):
 
     def _process_sample_task(self, task, samples_dir, smpl_data, sm24_data, sample_headers):
         """
-        Processes a single sample task (mono or stereo).
+        Processes a sample task (single or combined).
         Returns a mapping of sample IDs to basenames.
         """
-        basename = task["basename"]
 
-        if task["type"] == "mono":
-            # Mono sample or broken stereo channel
-            return self._process_single_channel_sample(task["idx"], task["header"], basename, samples_dir, smpl_data, sm24_data)
-        elif task["type"] == "stereo":
-            # Stereo sample pair
-            header = task["header"]
-            linked_header = task["linked_header"]
-            idx = task["idx"]
-            linked_idx = task["linked_idx"]
+        if task["type"] == "single_channel":
+            return self._process_single_channel_task(task, samples_dir, smpl_data, sm24_data)
+        elif task["type"] == "combined_stereo":
+            return self._process_combined_stereo_task(task, samples_dir, smpl_data, sm24_data)
 
-            left_h, right_h, left_idx, right_idx = (
-                (header, linked_header, idx, linked_idx)
-                if header["sample_type"] & 4
-                else (linked_header, header, linked_idx, idx)
-            )
-
-            should_split = self.split_stereo or header["sample_type"] & SF_SAMPLETYPE_VORBIS or linked_header["sample_type"] & SF_SAMPLETYPE_VORBIS
-
-            if should_split:
-                # Split stereo into separate files
-                left_result = self._process_single_channel_sample(left_idx, left_h, basename, samples_dir, smpl_data, sm24_data)
-                right_result = self._process_single_channel_sample(right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
-                # Combine results
-                combined_result = {}
-                combined_result.update(left_result)
-                combined_result.update(right_result)
-                return combined_result
-            else:
-                # Combined stereo file
-                return self._process_combined_stereo_sample(left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+    def _process_single_channel_task(self, task, samples_dir, smpl_data, sm24_data):
+        """
+        Processes a single channel sample task.
+        """
+        return self._write_single_channel_sample(task["idx"], task["header"], task["basename"], samples_dir, smpl_data, sm24_data)
 
     @abstractmethod
-    def _process_combined_stereo_sample(self, left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data):
+    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
         """
-        Processes and writes a combined stereo audio file.
+        Processes a combined stereo sample task.
         """
         pass
 
-    @abstractmethod
-    def _process_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
+    def _get_left_right_pair(self, task):
         """
-        Processes and writes a single audio channel to a file.
+        Returns the left and right headers and indices for a stereo pair task.
+
+        Returns:
+            tuple: (left_header, right_header, left_idx, right_idx)
+        """
+        header = task["header"]
+        linked_header = task["linked_header"]
+        idx = task["idx"]
+        linked_idx = task["linked_idx"]
+
+        if header["sample_type"] & 4:
+            # Left channel is primary
+            return header, linked_header, idx, linked_idx
+        else:
+            # Right channel is primary
+            return linked_header, header, linked_idx, idx
+
+    def _write_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
+        """
+        Processes a mono sample, or a single channel from a stereo pair.
+        """
+        output_name = basename
+        sample_type = "mono"
+        # Check if it's part of a stereo pair
+        if header["sample_type"] & 4:
+            output_name = f"{basename}_L"
+            sample_type = "stereo_left"
+        elif header["sample_type"] & 2:
+            output_name = f"{basename}_R"
+            sample_type = "stereo_right"
+
+        # Write audio data
+        self._write_single_channel_audio_data(output_name, header, samples_dir, smpl_data, sm24_data)
+
+        # Save metadata to JSON (as relative positions)
+        self._write_sample_metadata(samples_dir / f"{output_name}.json", basename, sample_type, header)
+
+        return {idx: basename}
+
+    @abstractmethod
+    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
+        """
+        Writes the audio data for a single channel to a file.
         """
         pass
 
@@ -478,43 +498,30 @@ class _SF2Decompiler(SoundFontDecompiler):
     Decompiler for SF2 files (PCM audio).
     """
 
-    def _process_combined_stereo_sample(self, left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data):
+    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
         """
-        Processes a stereo sample into a single combined PCM file.
+        Processes a combined stereo sample task.
         """
-        left_data = smpl_data[left_h["start"] * 2:left_h["end"] * 2]
-        right_data = smpl_data[right_h["start"] * 2:right_h["end"] * 2]
-        left_data_24_lsb = sm24_data[left_h["start"]:left_h["end"]] if sm24_data else b""
-        right_data_24_lsb = sm24_data[right_h["start"]:right_h["end"]] if sm24_data else b""
-        is_24bit = any([left_data_24_lsb, right_data_24_lsb])
+        basename = task["basename"]
 
-        # Left channel PCM data
-        left_pcm = np.frombuffer(left_data, dtype=np.int16)
-        # Right channel PCM data
-        right_pcm = np.frombuffer(right_data, dtype=np.int16)
+        left_h, right_h, left_idx, right_idx = self._get_left_right_pair(task)
 
-        # Handle 24-bit LSB data if available
-        if is_24bit:
-            left_pcm_24_lsb = np.frombuffer(left_data_24_lsb, dtype=np.uint8)
-            left_pcm = (left_pcm.astype(np.int32) << 16) + (left_pcm_24_lsb.astype(np.int32) << 8)
-            right_pcm_24_lsb = np.frombuffer(right_data_24_lsb, dtype=np.uint8)
-            right_pcm = (right_pcm.astype(np.int32) << 16) + (right_pcm_24_lsb.astype(np.int32) << 8)
+        if self.split_stereo:
+            # Split stereo into separate files
+            left_result = self._write_single_channel_sample(left_idx, left_h, basename, samples_dir, smpl_data, sm24_data)
+            right_result = self._write_single_channel_sample(right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+            # Combine results
+            combined_result = {}
+            combined_result.update(left_result)
+            combined_result.update(right_result)
+            return combined_result
+        else:
+            # Combined stereo file
+            return self._write_combined_stereo_sample(left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
 
-        # Align lengths (to the shorter one)
-        min_len = min(len(left_pcm), len(right_pcm))
-        # Create stereo array (samples, channels)
-        stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
-
-        # Write stereo FLAC file
-        sf.write(samples_dir / f"{basename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
-        # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "stereo", left_h)
-
-        return {left_idx: basename, right_idx: basename}
-
-    def _process_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
+    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
         """
-        Processes a mono sample, or a single channel from a stereo pair, from PCM data.
+        Writes the audio data for a single channel to a FLAC file.
         """
         audio_data = smpl_data[header["start"] * 2:header["end"] * 2]
         audio_data_24_lsb = sm24_data[header["start"]:header["end"]] if sm24_data else b""
@@ -527,23 +534,53 @@ class _SF2Decompiler(SoundFontDecompiler):
             audio_pcm_24_lsb = np.frombuffer(audio_data_24_lsb, dtype=np.uint8)
             audio_pcm = (audio_pcm.astype(np.int32) << 16) + (audio_pcm_24_lsb.astype(np.int32) << 8)
 
-        output_name = basename
-        sample_type = "mono"
-
-        # Check if it's part of a stereo pair
-        if header["sample_type"] & 4:
-            output_name = f"{basename}_L"
-            sample_type = "stereo_left"
-        elif header["sample_type"] & 2:
-            output_name = f"{basename}_R"
-            sample_type = "stereo_right"
-
         # Write mono FLAC file
         sf.write(samples_dir / f"{output_name}.flac", audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
-        # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{output_name}.json", basename, sample_type, header)
 
-        return {idx: basename}
+    def _write_combined_stereo_sample(self, left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data):
+        """
+        Writes a combined stereo sample to a FLAC file.
+        """
+        # Write audio data
+        self._write_combined_stereo_audio_data(basename, left_h, right_h, samples_dir, smpl_data, sm24_data)
+
+        # Save metadata to JSON (as relative positions)
+        self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "stereo", left_h)
+
+        return {
+            left_idx: basename,
+            right_idx: basename
+        }
+
+    def _write_combined_stereo_audio_data(self, output_name, left_header, right_header, samples_dir, smpl_data, sm24_data):
+        # Extract left channel data
+        left_audio_data = smpl_data[left_header["start"] * 2:left_header["end"] * 2]
+        left_audio_data_24_lsb = sm24_data[left_header["start"]:left_header["end"]] if sm24_data else b""
+        left_audio_pcm = np.frombuffer(left_audio_data, dtype=np.int16)
+
+        # Extract right channel data
+        right_audio_data = smpl_data[right_header["start"] * 2:right_header["end"] * 2]
+        right_audio_data_24_lsb = sm24_data[right_header["start"]:right_header["end"]] if sm24_data else b""
+        right_audio_pcm = np.frombuffer(right_audio_data, dtype=np.int16)
+
+        # Handle 24-bit LSB data if available
+        is_24bit = any(left_audio_data_24_lsb) and any(right_audio_data_24_lsb)
+        if is_24bit:
+            left_audio_pcm_24_lsb = np.frombuffer(left_audio_data_24_lsb, dtype=np.uint8)
+            left_audio_pcm = (left_audio_pcm.astype(np.int32) << 16) + (left_audio_pcm_24_lsb.astype(np.int32) << 8)
+            right_audio_pcm_24_lsb = np.frombuffer(right_audio_data_24_lsb, dtype=np.uint8)
+            right_audio_pcm = (right_audio_pcm.astype(np.int32) << 16) + (right_audio_pcm_24_lsb.astype(np.int32) << 8)
+
+        # Ensure both channels have the same length
+        min_length = min(len(left_audio_pcm), len(right_audio_pcm))
+        left_audio_pcm = left_audio_pcm[:min_length]
+        right_audio_pcm = right_audio_pcm[:min_length]
+
+        # Combine into stereo array
+        stereo_pcm = np.column_stack((left_audio_pcm, right_audio_pcm))
+
+        # Write stereo FLAC file
+        sf.write(samples_dir / f"{output_name}.flac", stereo_pcm, left_header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
 
     def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
@@ -568,35 +605,33 @@ class _SF3Decompiler(SoundFontDecompiler):
     Decompiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def _process_combined_stereo_sample(self, *args, **kwargs):
-        raise NotImplementedError("SF3Decompiler does not support combined stereo output.")
-
-    def _process_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
+    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
         """
-        Processes a mono sample from Ogg Vorbis data.
+        Processes a combined stereo sample task.
+        Always splits stereo into separate files for SF3.
+        """
+        basename = task["basename"]
+
+        left_h, right_h, left_idx, right_idx = self._get_left_right_pair(task)
+
+        # Always split stereo into separate files
+        left_result = self._write_single_channel_sample(left_idx, left_h, basename, samples_dir, smpl_data, sm24_data)
+        right_result = self._write_single_channel_sample(right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+        # Combine results
+        combined_result = {}
+        combined_result.update(left_result)
+        combined_result.update(right_result)
+        return combined_result
+
+    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
+        """
+        Writes the audio data for a single channel to an Ogg Vorbis file.
         """
         ogg_data = smpl_data[header["start"]:header["end"]]
 
-        output_name = basename
-        sample_type = "mono"
-
-        # Check if it's part of a stereo pair
-        if header["sample_type"] & 4:
-            output_name = f"{basename}_L"
-            sample_type = "stereo_left"
-        elif header["sample_type"] & 2:
-            output_name = f"{basename}_R"
-            sample_type = "stereo_right"
-
         # Write raw Ogg Vorbis bytes without re-encoding
-        ogg_path = samples_dir / f"{output_name}.ogg"
-        with open(ogg_path, "wb") as f:
+        with open(samples_dir / f"{output_name}.ogg", "wb") as f:
             f.write(ogg_data)
-
-        # Save metadata
-        self._write_sample_metadata(samples_dir / f"{output_name}.json", basename, sample_type, header)
-
-        return {idx: basename}
 
     def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
