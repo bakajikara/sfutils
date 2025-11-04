@@ -389,7 +389,6 @@ class SoundFontCompiler(ABC):
             raise FileNotFoundError(f"instruments directory not found in {self.input_dir}")
 
         json_files = sorted(instruments_dir.glob("*.json"))
-        total_files = len(json_files)
 
         # Process in parallel with progress display, preserving order
         with ThreadPoolExecutor() as executor:
@@ -401,14 +400,11 @@ class SoundFontCompiler(ABC):
 
             # Collect results with their original indices
             results_with_index = []
-            for completed, future in enumerate(as_completed(future_to_index), 1):
+            for future in as_completed(future_to_index):
                 try:
                     data = future.result()
                     idx = future_to_index[future]
                     results_with_index.append((idx, data))
-
-                    # Show progress inline
-                    progress = (completed / total_files) * 100
                 except Exception as e:
                     idx = future_to_index[future]
                     print(f"  ERROR loading {json_files[idx]}: {e}")
@@ -429,7 +425,6 @@ class SoundFontCompiler(ABC):
             raise FileNotFoundError(f"presets directory not found in {self.input_dir}")
 
         json_files = sorted(presets_dir.glob("*.json"))
-        total_files = len(json_files)
 
         # Process in parallel with progress display, preserving order
         with ThreadPoolExecutor() as executor:
@@ -441,14 +436,11 @@ class SoundFontCompiler(ABC):
 
             # Collect results with their original indices
             results_with_index = []
-            for completed, future in enumerate(as_completed(future_to_index), 1):
+            for future in as_completed(future_to_index):
                 try:
                     data = future.result()
                     idx = future_to_index[future]
                     results_with_index.append((idx, data))
-
-                    # Show progress inline
-                    progress = (completed / total_files) * 100
                 except Exception as e:
                     idx = future_to_index[future]
                     print(f"  ERROR loading {json_files[idx]}: {e}")
@@ -889,7 +881,7 @@ class _SF2Compiler(SoundFontCompiler):
         sample_type = sample["sample_type"]
 
         return struct.pack(
-            "<20sIIIIIBBHH",
+            "<20sIIIIIBbHH",
             name_bytes,
             start,
             end,
@@ -897,7 +889,7 @@ class _SF2Compiler(SoundFontCompiler):
             end_loop,
             sample_rate,
             sample["original_key"],
-            sample["correction"] & 0xFF,
+            sample["correction"],
             sample["sample_link"],
             sample_type
         )
@@ -1038,7 +1030,7 @@ class _SF3Compiler(SoundFontCompiler):
         sample_type = base_sample_type | SF_SAMPLETYPE_VORBIS
 
         return struct.pack(
-            "<20sIIIIIBBHH",
+            "<20sIIIIIBbHH",
             name_bytes,
             start,
             end,
@@ -1046,7 +1038,7 @@ class _SF3Compiler(SoundFontCompiler):
             end_loop,
             sample_rate,
             sample["original_key"],
-            sample["correction"] & 0xFF,
+            sample["correction"],
             sample["sample_link"],
             sample_type
         )
