@@ -5,14 +5,15 @@ Roundtrip Test - Verify integrity of SoundFont files
 Decompiles and recompiles SoundFont files under different conditions
 to confirm the process is reversible or produces an equivalent file.
 
-- Test 1: MuseScore_General_HQ.sf2 (default options)
-- Test 2: MuseScore_General_HQ.sf2 (with split stereo option)
-- Test 3: MuseScore_General_HQ.sf3 (equivalence check)
+Usage:
+  python test_roundtrip.py          (Runs all tests)
+  python test_roundtrip.py 1 3      (Runs tests #1 and #3 only)
 """
 
 import sys
 import hashlib
 import shutil
+import argparse  # Import the argparse library
 from pathlib import Path
 from sfutils import SoundFontCompiler, SoundFontDecompiler
 from test_equivalence import SoundFontEquivalenceChecker
@@ -122,6 +123,7 @@ def run_test_case(test_name: str, original_file: Path, decompiler_options: dict,
 def main():
     """Defines and runs all roundtrip test cases."""
 
+    # Define all available test cases
     test_cases = [
         {
             "test_name": "SF2 Default Roundtrip",
@@ -143,8 +145,39 @@ def main():
         },
     ]
 
+    parser = argparse.ArgumentParser(description="Run SoundFont roundtrip tests.")
+    parser.add_argument(
+        "test_numbers",
+        nargs="*",
+        type=int,
+        help="Optional numbers of the specific tests to run (e.g., 1 3). If omitted, all tests are run."
+    )
+    args = parser.parse_args()
+
+    print("Available Test Cases:")
+    for i, case in enumerate(test_cases, 1):
+        print(f"  {i}: {case["test_name"]}")
+
+    tests_to_run = []
+    if not args.test_numbers:
+        # If no numbers are provided, select all tests
+        tests_to_run = test_cases
+        print("\nNo specific tests selected. Running all tests.")
+    else:
+        # If numbers are provided, select only those tests
+        valid_numbers = range(1, len(test_cases) + 1)
+        for num in args.test_numbers:
+            if num not in valid_numbers:
+                print(f"\n❌ Error: Invalid test number \"{num}\". Please choose from the list above.")
+                sys.exit(1)
+            tests_to_run.append(test_cases[num - 1])  # Adjust for 0-based index
+
+        selected_numbers_str = ", ".join(map(str, args.test_numbers))
+        print(f"\nRunning selected tests: #{selected_numbers_str}")
+
+    # --- Run the selected tests ---
     results = {}
-    for case in test_cases:
+    for case in tests_to_run:
         decompiler_opts = case.get("decompiler_options", {})
         compiler_opts = case.get("compiler_options", {})
 
@@ -156,9 +189,15 @@ def main():
         )
         results[case["test_name"]] = result
 
+    # --- Final Summary ---
     print("\n" + "=" * 80)
     print("⏹️  Roundtrip Test Suite Summary")
     print("=" * 80)
+
+    # Check if any tests were actually run
+    if not results:
+        print("No tests were run.")
+        sys.exit(0)
 
     all_passed = True
     for name, passed in results.items():
@@ -169,10 +208,10 @@ def main():
 
     print("-" * 80)
     if all_passed:
-        print("🎉 All test cases passed!")
+        print("🎉 All selected test cases passed!")
         sys.exit(0)
     else:
-        print("🔥 Some test cases failed.")
+        print("🔥 Some selected test cases failed.")
         sys.exit(1)
 
 
