@@ -30,6 +30,7 @@ except ImportError:
     sys.exit(1)
 
 from .constants import GENERATOR_IDS, SF_SAMPLETYPE_VORBIS
+from .riff import make_chunk, make_list_chunk, make_zstr
 
 # ffmpeg is only required for SF3 compilation from non-OGG sources
 # Import it conditionally when needed
@@ -49,72 +50,6 @@ def _check_ffmpeg():
         except ImportError:
             _ffmpeg_available = False
     return _ffmpeg_available
-
-
-def make_chunk(chunk_id, data):
-    """
-    Creates a RIFF chunk with the given ID and data.
-    Automatically adds padding if the data size is odd.
-
-    Args:
-        chunk_id: The 4-byte chunk ID.
-        data: The chunk's data.
-
-    Returns:
-        The created chunk as a bytes object.
-    """
-    if len(chunk_id) != 4:
-        raise ValueError("Chunk ID must be 4 bytes long.")
-
-    size = len(data)
-    packed_data = chunk_id + struct.pack("<I", size) + data
-
-    # Add padding if size is odd
-    if size % 2:
-        packed_data += b"\x00"
-
-    return packed_data
-
-
-def make_list_chunk(list_type, data):
-    """
-    Creates a LIST chunk with the given list type and data.
-
-    Args:
-        list_type: The 4-byte list type ID (e.g., b"INFO", b"pdta").
-        data: The internal data.
-
-    Returns:
-        The created LIST chunk as a bytes object.
-    """
-    if len(list_type) != 4:
-        raise ValueError("List type ID must be 4 bytes long.")
-
-    # Internal data starts with the list type ID
-    list_data = list_type + data
-    return make_chunk(b"LIST", list_data)
-
-
-def make_zstr(text, encoding="ascii"):
-    """
-    Creates a zero-terminated string compliant with the RIFF specification.
-    Adjusts the total byte count to be even.
-
-    Args:
-        text: The string.
-        encoding: The encoding (default: "ascii").
-
-    Returns:
-        The zero-terminated bytes.
-    """
-    encoded = text.encode(encoding)
-
-    # If string length is odd, add one terminator (total even)
-    # If string length is even, add two terminators (total even)
-    if len(encoded) % 2 == 1:
-        return encoded + b"\x00"
-    else:
-        return encoded + b"\x00\x00"
 
 
 class SoundFontCompiler(ABC):

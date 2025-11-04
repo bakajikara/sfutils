@@ -12,27 +12,7 @@ providing access to preset and instrument definitions, sample data, and metadata
 
 import struct
 
-
-def read_chunk_header(f):
-    """
-    Reads a RIFF chunk header (ID and size) from a file.
-
-    Args:
-        f: The file object.
-
-    Returns:
-        A tuple containing the chunk ID and chunk size.
-    """
-    chunk_id = f.read(4)
-    if len(chunk_id) < 4:
-        raise EOFError("Unexpected end of file while reading chunk ID.")
-
-    chunk_size_bytes = f.read(4)
-    if len(chunk_size_bytes) < 4:
-        raise EOFError("Unexpected end of file while reading chunk size.")
-
-    chunk_size = struct.unpack("<I", chunk_size_bytes)[0]
-    return chunk_id, chunk_size
+from .riff import read_chunk_header
 
 
 class SoundFontParser:
