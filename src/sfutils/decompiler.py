@@ -57,7 +57,7 @@ class SoundFontDecompiler(ABC):
     Decompiles a SoundFont file into a directory structure.
     Automatically handles SF2 (PCM) and SF3 (Ogg Vorbis) formats.
     """
-    def __new__(cls, sf_path, output_dir):
+    def __new__(cls, sf_path, output_dir, split_stereo=False):
         """
         Factory method to create a SoundFontDecompiler instance.
         """
@@ -71,7 +71,7 @@ class SoundFontDecompiler(ABC):
 
         return instance
 
-    def __init__(self, sf_path, output_dir):
+    def __init__(self, sf_path, output_dir, split_stereo=False):
         """
         Initializes the SoundFont Decompiler.
 
@@ -82,7 +82,8 @@ class SoundFontDecompiler(ABC):
         self.sf_path = sf_path
         self.output_dir = Path(output_dir)
         self.parser = SoundFontParser(sf_path)
-        self.sample_id_to_filename = {}
+        self.sample_id_to_name = {}
+        self.split_stereo = split_stereo
 
     def decompile(self):
         """
@@ -129,9 +130,9 @@ class SoundFontDecompiler(ABC):
         # Process tasks in parallel
         results = self._process_sample_tasks_parallel(tasks, samples_dir, smpl_data, sm24_data, sample_headers)
 
-        # Update filename mappings
+        # Update sample ID to name mappings
         for result in results:
-            self.sample_id_to_filename.update(result["id_mapping"])
+            self.sample_id_to_name.update(result)
 
         print(f"  Created: {len(results)} sample files in samples/")
 
@@ -142,7 +143,7 @@ class SoundFontDecompiler(ABC):
         """
         tasks = []
         processed = set()
-        filename_counts = {}
+        basename_counts = {}
 
         for idx, header in enumerate(sample_headers):
             if idx in processed or not any(header.values()):
@@ -166,19 +167,19 @@ class SoundFontDecompiler(ABC):
                 linked_header = sample_headers[linked_idx]
                 left_h, right_h = (header, linked_header) if sample_type & 4 else (linked_header, header)
 
-                # Determine base filename
+                # Determine basename
                 common_name = self._extract_common_name(left_h["name"], right_h["name"]) or f"sample_{idx}_{linked_idx}"
-                base_filename = sanitize_filename(common_name)
+                initial_basename = sanitize_filename(common_name)
 
-                # Make filename unique
-                if base_filename in filename_counts:
-                    count = filename_counts[base_filename]
-                    filename_counts[base_filename] += 1
-                    final_filename = f"{base_filename}_{count}"
-                    original_name = base_filename
+                # Make basename unique
+                if initial_basename in basename_counts:
+                    count = basename_counts[initial_basename]
+                    basename_counts[initial_basename] += 1
+                    final_basename = f"{initial_basename}_{count}"
+                    original_name = initial_basename
                 else:
-                    filename_counts[base_filename] = 1
-                    final_filename = base_filename
+                    basename_counts[initial_basename] = 1
+                    final_basename = initial_basename
                     original_name = None
 
                 tasks.append({
@@ -187,31 +188,31 @@ class SoundFontDecompiler(ABC):
                     "header": header,
                     "linked_idx": linked_idx,
                     "linked_header": linked_header,
-                    "filename": final_filename,
+                    "basename": final_basename,
                     "original_name": original_name
                 })
                 processed.add(idx)
                 processed.add(linked_idx)
             else:
                 # Prepare mono task
-                base_filename = sanitize_filename(header["name"])
+                initial_basename = sanitize_filename(header["name"])
 
-                # Make filename unique
-                if base_filename in filename_counts:
-                    count = filename_counts[base_filename]
-                    filename_counts[base_filename] += 1
-                    final_filename = f"{base_filename}_{count}"
-                    original_name = base_filename
+                # Make basename unique
+                if initial_basename in basename_counts:
+                    count = basename_counts[initial_basename]
+                    basename_counts[initial_basename] += 1
+                    final_basename = f"{initial_basename}_{count}"
+                    original_name = initial_basename
                 else:
-                    filename_counts[base_filename] = 1
-                    final_filename = base_filename
+                    basename_counts[initial_basename] = 1
+                    final_basename = initial_basename
                     original_name = None
 
                 tasks.append({
                     "type": "mono",
                     "idx": idx,
                     "header": header,
-                    "filename": final_filename,
+                    "basename": final_basename,
                     "original_name": original_name
                 })
                 processed.add(idx)
@@ -229,7 +230,7 @@ class SoundFontDecompiler(ABC):
         for task in tasks:
             if task.get("original_name"):
                 print(f"    WARNING: Duplicate sample name found. Original: \"{task["original_name"]}\"")
-                print(f"      -> Renaming to: \"{task["filename"]}\"")
+                print(f"      -> Renaming to: \"{task["basename"]}\"")
 
         results = []
         with ThreadPoolExecutor() as executor:
@@ -267,7 +268,7 @@ class SoundFontDecompiler(ABC):
     def _process_sample_task(self, task, samples_dir, smpl_data, sm24_data, sample_headers):
         """
         Processes a single sample task (mono or stereo).
-        Returns a dict with filename and id_mapping.
+        Returns a mapping of sample IDs to basenames.
         """
         if task["type"] == "stereo":
             return self._process_stereo_sample(
@@ -275,7 +276,7 @@ class SoundFontDecompiler(ABC):
                 task["header"],
                 task["linked_idx"],
                 task["linked_header"],
-                task["filename"],
+                task["basename"],
                 samples_dir,
                 smpl_data,
                 sm24_data
@@ -284,28 +285,28 @@ class SoundFontDecompiler(ABC):
             return self._process_mono_sample(
                 task["idx"],
                 task["header"],
-                task["filename"],
+                task["basename"],
                 samples_dir,
                 smpl_data,
                 sm24_data
             )
 
     @abstractmethod
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample.
         """
         pass
 
     @abstractmethod
-    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_mono_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample.
         """
         pass
 
     @abstractmethod
-    def _write_sample_metadata(self, path, name, type, header):
+    def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
         Writes sample metadata to a JSON file.
         """
@@ -398,8 +399,8 @@ class SoundFontDecompiler(ABC):
             if gen["oper"] == 53:  # sampleID -> renamed to sample
                 if amount < len(sample_headers):
                     sample_h = sample_headers[amount]
-                    # Get from sample ID -> filename mapping (handles duplicates)
-                    final_name = self.sample_id_to_filename.get(amount, sanitize_filename(sample_h["name"]))
+                    # Get from sample ID -> name mapping (handles duplicates)
+                    final_name = self.sample_id_to_name.get(amount, sanitize_filename(sample_h["name"]))
                     generators["sample"] = final_name
                     # Save channel info for stereo
                     if sample_h["sample_type"] & 6:  # Stereo
@@ -460,14 +461,15 @@ class _SF2Decompiler(SoundFontDecompiler):
     Decompiler for SF2 files (PCM audio).
     """
 
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample from PCM data.
+        Splits into separate files if split_stereo is True.
         """
         # Determine left and right channels
         left_h, right_h, left_idx, right_idx = (
             (header, linked_header, idx, linked_idx)
-            if header["sample_type"] == 4
+            if header["sample_type"] & 4
             else (linked_header, header, linked_idx, idx)
         )
 
@@ -489,25 +491,30 @@ class _SF2Decompiler(SoundFontDecompiler):
             right_pcm_24_lsb = np.frombuffer(right_data_24_lsb, dtype=np.uint8)
             right_pcm = (right_pcm.astype(np.int32) << 16) + (right_pcm_24_lsb.astype(np.int32) << 8)
 
-        # Align lengths (to the shorter one)
-        min_len = min(len(left_pcm), len(right_pcm))
-        # Create stereo array (samples, channels)
-        stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
+        if self.split_stereo:
+            # Write left channel
+            left_filename = f"{basename}_L"
+            sf.write(samples_dir / f"{left_filename}.flac", left_pcm, left_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+            self._write_sample_metadata(samples_dir / f"{left_filename}.json", basename, "stereo_left", left_h)
 
-        # Use the provided unique filename
-        final_filename = filename
+            # Write right channel
+            right_filename = f"{basename}_R"
+            sf.write(samples_dir / f"{right_filename}.flac", right_pcm, right_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+            self._write_sample_metadata(samples_dir / f"{right_filename}.json", basename, "stereo_right", right_h)
+        else:
+            # Align lengths (to the shorter one)
+            min_len = min(len(left_pcm), len(right_pcm))
+            # Create stereo array (samples, channels)
+            stereo_pcm = np.column_stack((left_pcm[:min_len], right_pcm[:min_len]))
 
-        # Write stereo FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
-        # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "stereo", left_h)
+            # Write stereo FLAC file
+            sf.write(samples_dir / f"{basename}.flac", stereo_pcm, left_h["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+            # Save metadata to JSON (as relative positions)
+            self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "stereo", left_h)
 
-        return {
-            "filename": final_filename,
-            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
-        }
+        return {left_idx: basename, right_idx: basename}
 
-    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_mono_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample from PCM data.
         """
@@ -522,32 +529,27 @@ class _SF2Decompiler(SoundFontDecompiler):
             audio_pcm_24_lsb = np.frombuffer(audio_data_24_lsb, dtype=np.uint8)
             audio_pcm = (audio_pcm.astype(np.int32) << 16) + (audio_pcm_24_lsb.astype(np.int32) << 8)
 
-        # Use the provided unique filename
-        final_filename = filename
-
         # Write mono FLAC file
-        sf.write(samples_dir / f"{final_filename}.flac", audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+        sf.write(samples_dir / f"{basename}.flac", audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
         # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", header)
+        self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "mono", header)
 
-        return {
-            "filename": final_filename,
-            "id_mapping": {idx: final_filename}
-        }
+        return {idx: basename}
 
-    def _write_sample_metadata(self, path, name, type, header):
+    def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
         Writes sample metadata to a JSON file.
         Note: start/end are omitted as they will be calculated during compilation.
         """
         metadata = {
-            "sample_name": name,
-            "sample_type": type,
+            "sample_name": sample_name,
+            "sample_type": sample_type,
             "start_loop": header["start_loop"] - header["start"],
             "end_loop": header["end_loop"] - header["start"],
             "original_key": header["original_key"],
             "correction": header["correction"]
         }
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
@@ -557,10 +559,10 @@ class _SF3Decompiler(SoundFontDecompiler):
     Decompiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_stereo_sample(self, idx, header, linked_idx, linked_header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a stereo sample from Ogg Vorbis data.
-        TODO: Implement proper Ogg Vorbis stereo handling if needed.
+        Always outputs separate files to avoid re-encoding.
         """
         left_h, right_h, left_idx, right_idx = (
             (header, linked_header, idx, linked_idx)
@@ -572,61 +574,50 @@ class _SF3Decompiler(SoundFontDecompiler):
         left_ogg = smpl_data[left_h["start"]:left_h["end"]]
         right_ogg = smpl_data[right_h["start"]:right_h["end"]]
 
-        final_filename = filename
-
-        # Write raw Ogg Vorbis bytes without re-encoding
-        ogg_path_left = samples_dir / f"{final_filename}_L.ogg"
-        with open(ogg_path_left, "wb") as f:
+        # Write left channel
+        left_filename = f"{basename}_L"
+        with open(samples_dir / f"{left_filename}.ogg", "wb") as f:
             f.write(left_ogg)
+        self._write_sample_metadata(samples_dir / f"{left_filename}.json", basename, "stereo_left", left_h)
 
-        ogg_path_right = samples_dir / f"{final_filename}_R.ogg"
-        with open(ogg_path_right, "wb") as f:
+        # Write right channel
+        right_filename = f"{basename}_R"
+        with open(samples_dir / f"{right_filename}.ogg", "wb") as f:
             f.write(right_ogg)
+        self._write_sample_metadata(samples_dir / f"{right_filename}.json", basename, "stereo_right", right_h)
 
-        # Save metadata
-        self._write_sample_metadata(samples_dir / f"{final_filename}_L.json", f"{final_filename}_L", "mono", left_h)
-        self._write_sample_metadata(samples_dir / f"{final_filename}_R.json", f"{final_filename}_R", "mono", right_h)
+        return {left_idx: basename, right_idx: basename}
 
-        return {
-            "filename": final_filename,
-            "id_mapping": {left_idx: final_filename, right_idx: final_filename}
-        }
-
-    def _process_mono_sample(self, idx, header, filename, samples_dir, smpl_data, sm24_data):
+    def _process_mono_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
         """
         Processes a mono sample from Ogg Vorbis data.
         """
         ogg_data = smpl_data[header["start"]:header["end"]]
 
-        final_filename = filename
-
         # Write raw Ogg Vorbis bytes without re-encoding
-        ogg_path = samples_dir / f"{final_filename}.ogg"
+        ogg_path = samples_dir / f"{basename}.ogg"
         with open(ogg_path, "wb") as f:
             f.write(ogg_data)
 
         # Save metadata
-        self._write_sample_metadata(samples_dir / f"{final_filename}.json", final_filename, "mono", header)
+        self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "mono", header)
 
-        return {
-            "filename": final_filename,
-            "id_mapping": {idx: final_filename}
-        }
+        return {idx: basename}
 
-    def _write_sample_metadata(self, path, name, type, header):
+    def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
         Writes sample metadata to a JSON file.
-        Note: start/end are omitted as they will be calculated during compilation.
-        For SF3, loop positions are stored as relative offsets from sample start.
+        For SF3, loop positions are stored as relative offsets.
         """
         metadata = {
-            "sample_name": name,
-            "sample_type": type,
+            "sample_name": sample_name,
+            "sample_type": sample_type,
             "start_loop": header["start_loop"],
             "end_loop": header["end_loop"],
             "original_key": header["original_key"],
             "correction": header["correction"]
         }
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 

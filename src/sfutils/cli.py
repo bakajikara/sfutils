@@ -33,16 +33,14 @@ def _build_root_parser():
     c_compile = sub.add_parser("compile", help="Compile a directory into a SoundFont file")
     c_compile.add_argument("input_directory", help="Input directory with info.json, samples/, instruments/, presets/")
     c_compile.add_argument("output_file", nargs="?", help="Output SoundFont file path (default: <input_dir_name>.sf2 or .sf3 based on info.json)")
-    c_compile.add_argument("-q", "--quality", type=float, metavar="QUALITY",
-                           help="Ogg Vorbis quality for SF3 (0.0-1.0, default: 0.8)")
-    c_compile.add_argument("-f", "--force", action="store_true",
-                           help="Force overwrite without confirmation")
+    c_compile.add_argument("-f", "--force", action="store_true", help="Force overwrite without confirmation")
+    c_compile.add_argument("-q", "--quality", type=float, metavar="QUALITY", help="Ogg Vorbis quality for SF3 (0.0-1.0, default: 0.8)")
 
     c_decompile = sub.add_parser("decompile", help="Decompile a SoundFont file into a directory")
     c_decompile.add_argument("input_file", help="Input SoundFont file path")
     c_decompile.add_argument("output_directory", nargs="?", help="Output directory to create (default: same name as input file)")
-    c_decompile.add_argument("-f", "--force", action="store_true",
-                             help="Force overwrite without confirmation")
+    c_decompile.add_argument("-f", "--force", action="store_true", help="Force overwrite without confirmation")
+    c_decompile.add_argument("-s", "--split-stereo", action="store_true", help="Output stereo samples as separate left and right channel files for SF2. SF3 always splits them.")
 
     return p
 
@@ -116,7 +114,7 @@ def main(argv=None):
                     print("Decompilation cancelled.")
                     return 0
 
-            decompiler = SoundFontDecompiler(sf, outdir)
+            decompiler = SoundFontDecompiler(sf, outdir, split_stereo=args.split_stereo)
             decompiler.decompile()
 
         else:

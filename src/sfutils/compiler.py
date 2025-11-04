@@ -169,11 +169,11 @@ class SoundFontCompiler(ABC):
         Fixes stereo sample links after parallel loading.
         Stereo pairs need to reference each other by index.
         """
-        # Group stereo samples by audio path and name
+        # Group stereo samples by name
         stereo_groups = {}
         for idx, sample in enumerate(self.samples):
             if sample.get("_is_stereo"):
-                key = (sample["_audio_path"], sample["sample_name"])
+                key = sample["sample_name"]
                 if key not in stereo_groups:
                     stereo_groups[key] = []
                 stereo_groups[key].append(idx)
@@ -181,14 +181,22 @@ class SoundFontCompiler(ABC):
         # Set mutual links for each stereo pair
         for indices in stereo_groups.values():
             if len(indices) == 2:
-                left_idx, right_idx = indices[0], indices[1]
-                # Determine which is left and which is right
-                if self.samples[left_idx]["_channel"] == "left":
-                    self.samples[left_idx]["sample_link"] = right_idx
-                    self.samples[right_idx]["sample_link"] = left_idx
+                idx1, idx2 = indices[0], indices[1]
+                sample1, sample2 = self.samples[idx1], self.samples[idx2]
+
+                # Verify channel consistency
+                if (
+                    (sample1.get("_channel") == "left" and sample2.get("_channel") == "right") or
+                    (sample1.get("_channel") == "right" and sample2.get("_channel") == "left")
+                ):
+                    # Set mutual links
+                    sample1["sample_link"] = idx2
+                    sample2["sample_link"] = idx1
                 else:
-                    self.samples[left_idx]["sample_link"] = right_idx
-                    self.samples[right_idx]["sample_link"] = left_idx
+                    print(f"  Warning: Channel mismatch in stereo pair for sample \"{sample1["sample_name"]}\" and \"{sample2["sample_name"]}\".")
+
+            else:
+                print(f"  Warning: Incomplete stereo pair for sample(s) \"{"\", \"".join(self.samples[idx]["sample_name"] for idx in indices)}\".")
 
     def _load_bank_info(self):
         """
@@ -289,11 +297,11 @@ class SoundFontCompiler(ABC):
         sample_type = metadata.get("sample_type", "mono")
 
         if sample_type == "stereo":
-            return self._create_stereo_sample_entries(metadata, audio_path)
+            return self._create_combined_stereo_sample_entries(metadata, audio_path)
         else:
-            return [self._create_mono_sample_entry(metadata, audio_path)]
+            return [self._create_single_channel_entry(metadata, audio_path)]
 
-    def _create_stereo_sample_entries(self, metadata, audio_path):
+    def _create_combined_stereo_sample_entries(self, metadata, audio_path):
         """
         Creates stereo sample entries (left and right).
         Note: start/end will be calculated dynamically during compilation.
@@ -335,23 +343,38 @@ class SoundFontCompiler(ABC):
         # Note: sample_link indices will be fixed after all samples are collected
         return [left_sample, right_sample]
 
-    def _create_mono_sample_entry(self, metadata, audio_path):
+    def _create_single_channel_entry(self, metadata, audio_path):
         """
-        Creates a mono sample entry.
+        Creates a mono sample entry, or an entry for one channel of a split stereo pair.
         Note: start/end will be calculated dynamically during compilation.
         """
-        return {
+        sample_type = metadata.get("sample_type", "mono")
+
+        entry = {
             "sample_name": metadata["sample_name"],
             "start_loop": metadata.get("start_loop", 0),
             "end_loop": metadata.get("end_loop", 0),
             "original_key": metadata.get("original_key", 60),
             "correction": metadata.get("correction", 0),
-            "sample_link": 0,
-            "sample_type": 1,
+            "sample_link": 0,  # Will be set later by _fix_stereo_links
             "_audio_path": audio_path,
-            "_channel": None,
-            "_is_stereo": False
         }
+
+        # Set sample_type and channel info
+        if sample_type == "stereo_left":
+            entry["sample_type"] = 4
+            entry["_channel"] = "left"
+            entry["_is_stereo"] = True
+        elif sample_type == "stereo_right":
+            entry["sample_type"] = 2
+            entry["_channel"] = "right"
+            entry["_is_stereo"] = True
+        else:  # "mono"
+            entry["sample_type"] = 1
+            entry["_channel"] = None
+            entry["_is_stereo"] = False
+
+        return entry
 
     @abstractmethod
     def _read_audio_data(self, audio_path, channel=None):
