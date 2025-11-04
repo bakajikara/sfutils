@@ -33,6 +33,7 @@ class SoundFontEquivalenceChecker:
         self.sample_mapping = {}
         self.samples1_hashes = {}
         self.samples2_hashes = {}
+        self.inst_mapping = {}
 
     def check(self):
         """Run the equivalence check"""
@@ -65,7 +66,7 @@ class SoundFontEquivalenceChecker:
 
         self._check_info(data1["info"], data2["info"])
         self._check_samples(data1["samples"], data2["samples"], data1["smpl_data"], data2["smpl_data"], data1["sm24_data"], data2["sm24_data"], is_sf3)
-        self._check_instruments(data1["instruments"], data2["instruments"], data1["samples"], data2["samples"])
+        self._check_instruments(data1["instruments"], data2["instruments"])
         self._check_presets(data1["presets"], data2["presets"], data1["instruments"], data2["instruments"])
 
         # Display results
@@ -567,181 +568,152 @@ class SoundFontEquivalenceChecker:
         if link_errors == 0:
             print("    ✓ Sample links are consistent.")
 
-    def _check_instruments(self, instruments1, instruments2, samples1, samples2):
-        """Compare instruments (ignore order)"""
+    def _check_instruments(self, instruments1, instruments2):
+        """Compare instruments by signature, with detailed diff reporting on mismatch."""
         print("Checking instruments...")
 
         if len(instruments1) != len(instruments2):
             self.errors.append(f"Instrument count mismatch: {len(instruments1)} != {len(instruments2)}")
+            # Even if counts differ, try to match what we can for better error reporting
 
-        # Map instruments by content
-        def inst_signature(inst, sample_hashes):
-            """Generate instrument signature (excluding name)"""
-            sig = []
-            for zone in inst["zones"]:
-                zone_gens = []
-                zone_mods = []
+        # Helper to create a signature for an instrument for robust matching
+        def get_inst_signature(inst, sample_hashes_map):
+            sig_parts = []
+            # Normalize generators to make signature independent of sample IDs
+            normalized_gens = self._normalize_generators(
+                [gen for zone in inst["zones"] for gen in zone["generators"]],
+                53, self.samples1_hashes if sample_hashes_map is self.samples1_hashes else self.samples2_hashes
+            )
+            # Normalize modulators
+            normalized_mods = tuple(sorted([
+                tuple(mod.values()) for zone in inst["zones"] for mod in zone["modulators"]
+            ]))
+            return (tuple(sorted(normalized_gens)), normalized_mods)
 
-                for gen in zone["generators"]:
-                    # For sampleID (oper=53), use the sample's actual PCM hash
-                    if gen["oper"] == 53:  # sampleID
-                        sample_idx = gen["amount"]
-                        if sample_idx in sample_hashes:
-                            # Use the sample hash value to uniquely identify
-                            zone_gens.append((53, sample_hashes[sample_idx]))
-                        else:
-                            zone_gens.append((53, f"invalid_{sample_idx}"))
-                    else:
-                        zone_gens.append((gen["oper"], gen["amount"]))
-
-                for mod in zone["modulators"]:
-                    zone_mods.append((mod["src_oper"], mod["dest_oper"], mod["amount"], mod["amt_src_oper"], mod["trans_oper"]))
-
-                # Sort generators and modulators separately, then combine
-                sig.append((tuple(sorted(zone_gens)), tuple(sorted(zone_mods))))
-
-            return tuple(sorted(sig))
-
-        # Index instruments of file1
-        inst1_by_sig = {}
+        # Index file1 instruments by signature
+        inst1_by_sig = defaultdict(list)
         for idx, inst in enumerate(instruments1):
-            sig = inst_signature(inst, self.samples1_hashes)
-            if sig not in inst1_by_sig:
-                inst1_by_sig[sig] = []
+            sig = get_inst_signature(inst, self.samples1_hashes)
             inst1_by_sig[sig].append((idx, inst))
 
+        # Create a name-based lookup for file1 for better error reporting
+        inst1_by_name = {inst["name"]: (idx, inst) for idx, inst in enumerate(instruments1)}
+
         # Match each instrument in file2
-        matched = set()
-        inst_mapping = {}  # file2_idx -> file1_idx
-
         for idx2, inst2 in enumerate(instruments2):
-            sig2 = inst_signature(inst2, self.samples2_hashes)
+            sig2 = get_inst_signature(inst2, self.samples2_hashes)
+
             if sig2 in inst1_by_sig and inst1_by_sig[sig2]:
+                # Perfect match found based on content
                 idx1, inst1 = inst1_by_sig[sig2].pop(0)
-                matched.add(idx1)
-                inst_mapping[idx2] = idx1
-
-                # Name differences are only warnings (internal names)
+                self.inst_mapping[idx2] = idx1
                 if inst1["name"] != inst2["name"]:
-                    self.warnings.append(f"Instrument name differs: \"{inst1["name"]}\" vs \"{inst2["name"]}\" (internal names)")
-
+                    self.warnings.append(f"Instrument content matches, but name differs: \"{inst1["name"]}\" (file1) vs \"{inst2["name"]}\" (file2)")
             else:
-                self.errors.append(f"Instrument #{idx2} \"{inst2["name"]}\" in file2 not found in file1")
+                # No perfect match. Try to find a similarly named instrument for a detailed diff.
+                self.errors.append(f"Instrument #{idx2} \"{inst2["name"]}\" in file2 has no perfect content match in file1.")
+                if inst2["name"] in inst1_by_name:
+                    idx1_candidate, inst1_candidate = inst1_by_name[inst2["name"]]
+                    self.errors.append(f"  - Comparing with similarly named instrument \"{inst1_candidate["name"]}\" from file1:")
+                    self._report_instrument_diff(inst1_candidate, inst2)
+                else:
+                    self.errors.append(f"  - Furthermore, no instrument with this name exists in file1.")
 
-        # Check for unmatched instruments
-        for sig, remaining in inst1_by_sig.items():
-            for idx1, inst1 in remaining:
-                if idx1 not in matched:
-                    self.errors.append(f"Instrument #{idx1} \"{inst1["name"]}\" in file1 not found in file2")
+        # Check for any remaining unmatched instruments in file1
+        unmatched_count = sum(len(inst_list) for inst_list in inst1_by_sig.values())
+        if unmatched_count > 0:
+            self.errors.append(f"{unmatched_count} instruments from file1 were not matched in file2.")
 
-        print(f"  ✓ {len(matched)}/{len(instruments1)} instruments matched")
+    def _report_instrument_diff(self, inst1, inst2):
+        """Generates detailed error messages about the differences between two instruments."""
+        if len(inst1["zones"]) != len(inst2["zones"]):
+            self.errors.append(f"    - Zone count mismatch: {len(inst1["zones"])} vs {len(inst2["zones"])}")
+            return  # Further comparison is too complex if zone counts differ
 
-        # Save instrument mapping
-        self.inst_mapping = inst_mapping
+        for i, (z1, z2) in enumerate(zip(inst1["zones"], inst2["zones"])):
+            # Normalize and compare generators
+            gens1 = self._normalize_generators(z1["generators"], 53, self.samples1_hashes)
+            gens2 = self._normalize_generators(z2["generators"], 53, self.samples2_hashes)
+            self._report_list_diff(gens1, gens2, f"Zone {i} Generator", self.errors)
+
+            # Compare modulators
+            mods1 = [tuple(m.values()) for m in z1["modulators"]]
+            mods2 = [tuple(m.values()) for m in z2["modulators"]]
+            self._report_list_diff(mods1, mods2, f"Zone {i} Modulator", self.errors)
 
     def _check_presets(self, presets1, presets2, instruments1, instruments2):
-        """Compare presets (ignore order)"""
+        """Compare presets by bank/preset number, with detailed diff reporting."""
         print("Checking presets...")
 
         if len(presets1) != len(presets2):
             self.errors.append(f"Preset count mismatch: {len(presets1)} != {len(presets2)}")
 
-        # Group presets by bank/preset numbers
-        def group_by_bank_preset(presets):
-            """Group by bank/preset numbers"""
-            grouped = defaultdict(list)
-            for preset in presets:
-                key = (preset["bank"], preset["preset"])
-                grouped[key].append(preset)
-            return grouped
+        presets1_map = {(p["bank"], p["preset"]): p for p in presets1}
+        presets2_map = {(p["bank"], p["preset"]): p for p in presets2}
 
-        presets1_grouped = group_by_bank_preset(presets1)
-        presets2_grouped = group_by_bank_preset(presets2)
-
-        # Verify bank/preset number sets match
-        keys1 = set(presets1_grouped.keys())
-        keys2 = set(presets2_grouped.keys())
+        keys1 = set(presets1_map.keys())
+        keys2 = set(presets2_map.keys())
 
         if keys1 != keys2:
-            missing_in_2 = keys1 - keys2
-            missing_in_1 = keys2 - keys1
-            if missing_in_2:
-                self.errors.append(f"Preset bank/preset numbers in file1 but not in file2: {missing_in_2}")
-            if missing_in_1:
-                self.errors.append(f"Preset bank/preset numbers in file2 but not in file1: {missing_in_1}")
+            self.errors.append(f"Preset bank/preset key sets do not match.")
+            if keys1 - keys2:
+                self.errors.append(f"  - Keys in file1 only: {keys1 - keys2}")
+            if keys2 - keys1:
+                self.errors.append(f"  - Keys in file2 only: {keys2 - keys1}")
 
-        # Compare presets within each bank/preset number
-        matched_count = 0
-        for key in keys1 & keys2:
-            bank, preset = key
-            list1 = presets1_grouped[key]
-            list2 = presets2_grouped[key]
+        for key in keys1.intersection(keys2):
+            p1 = presets1_map[key]
+            p2 = presets2_map[key]
 
-            if len(list1) != len(list2):
-                self.errors.append(f"Preset count mismatch for bank={bank}, preset={preset}: {len(list1)} != {len(list2)}")
+            if p1["name"] != p2["name"]:
+                self.errors.append(f"Preset \"{key}\" name mismatch: \"{p1["name"]}\" vs \"{p2["name"]}\"")
+
+            if len(p1["zones"]) != len(p2["zones"]):
+                self.errors.append(f"Preset \"{p1["name"]}\" zone count mismatch: {len(p1["zones"])} vs {len(p2["zones"])}")
                 continue
 
-            # Compare each preset
-            for p1, p2 in zip(list1, list2):
-                # Names are outward-facing info, check strictly
-                if p1["name"] != p2["name"]:
-                    self.errors.append(f"Preset name mismatch for bank={bank}, preset={preset}: \"{p1["name"]}\" != \"{p2["name"]}\"")
+            for i, (z1, z2) in enumerate(zip(p1["zones"], p2["zones"])):
+                # Normalize and compare generators
+                gens1 = self._normalize_generators(z1["generators"], 41, {idx: inst["name"] for idx, inst in enumerate(instruments1)})
+                gens2 = self._normalize_generators(z2["generators"], 41, {idx: inst["name"] for idx, inst in enumerate(instruments2)})
+                self._report_list_diff(gens1, gens2, f"Preset \"{p1["name"]}\" Zone {i} Generator", self.errors)
 
-                # Other metadata
-                if p1["library"] != p2["library"]:
-                    self.warnings.append(f"Preset library differs for \"{p1["name"]}\": {p1["library"]} != {p2["library"]}")
-                if p1["genre"] != p2["genre"]:
-                    self.warnings.append(f"Preset genre differs for \"{p1["name"]}\": {p1["genre"]} != {p2["genre"]}")
-                if p1["morphology"] != p2["morphology"]:
-                    self.warnings.append(f"Preset morphology differs for \"{p1["name"]}\": {p1["morphology"]} != {p2["morphology"]}")
+                # Compare modulators
+                mods1 = [tuple(m.values()) for m in z1["modulators"]]
+                mods2 = [tuple(m.values()) for m in z2["modulators"]]
+                self._report_list_diff(mods1, mods2, f"Preset \"{p1["name"]}\" Zone {i} Modulator", self.errors)
 
-                # Compare zones
-                if len(p1["zones"]) != len(p2["zones"]):
-                    self.errors.append(f"Zone count mismatch for preset \"{p1["name"]}\": {len(p1["zones"])} != {len(p2["zones"])}")
-                    continue
+    def _normalize_generators(self, generators, id_oper, id_map):
+        """
+        Normalizes a list of generators for comparison.
+        It replaces a specific ID (like sampleID or instrumentID) with a stable value from a map.
+        """
+        normalized = []
+        for gen in generators:
+            oper, amount = gen["oper"], gen["amount"]
+            if oper == id_oper:
+                # Replace the volatile ID with the stable mapped value (e.g., sample hash or instrument name)
+                stable_id = id_map.get(amount, f"INVALID_ID_{amount}")
+                normalized.append((oper, stable_id))
+            else:
+                normalized.append((oper, amount))
+        return normalized
 
-                for z_idx, (z1, z2) in enumerate(zip(p1["zones"], p2["zones"])):
-                    # Compare generators
-                    gens1 = sorted([(g["oper"], g["amount"]) for g in z1["generators"]])
-                    gens2 = sorted([(g["oper"], g["amount"]) for g in z2["generators"]])
+    def _report_list_diff(self, list1, list2, item_name, error_list):
+        """Compares two lists and reports added/removed items to the error list."""
+        set1 = set(list1)
+        set2 = set(list2)
 
-                    # For instrument (oper=41), consider instrument mapping
-                    gens1_normalized = []
-                    for oper, amount in gens1:
-                        if oper == 41:  # instrument
-                            # Compare by instrument content (not ID)
-                            if 0 <= amount < len(instruments1):
-                                inst = instruments1[amount]
-                                gens1_normalized.append((41, inst["name"]))  # use name as a stand-in identifier
-                            else:
-                                gens1_normalized.append((41, amount))
-                        else:
-                            gens1_normalized.append((oper, amount))
+        if set1 == set2:
+            return
 
-                    gens2_normalized = []
-                    for oper, amount in gens2:
-                        if oper == 41:  # instrument
-                            if 0 <= amount < len(instruments2):
-                                inst = instruments2[amount]
-                                gens2_normalized.append((41, inst["name"]))
-                            else:
-                                gens2_normalized.append((41, amount))
-                        else:
-                            gens2_normalized.append((oper, amount))
+        added = set2 - set1
+        removed = set1 - set2
 
-                    if gens1_normalized != gens2_normalized:
-                        self.errors.append(f"Generator mismatch in preset \"{p1["name"]}\" zone {z_idx}")
-
-                    # Compare modulators
-                    mods1 = sorted([(m["src_oper"], m["dest_oper"], m["amount"], m["amt_src_oper"], m["trans_oper"]) for m in z1["modulators"]])
-                    mods2 = sorted([(m["src_oper"], m["dest_oper"], m["amount"], m["amt_src_oper"], m["trans_oper"]) for m in z2["modulators"]])
-
-                    if mods1 != mods2:
-                        self.errors.append(f"Modulator mismatch in preset \"{p1["name"]}\" zone {z_idx}")
-
-                matched_count += 1
-
-        print(f"  ✓ {matched_count} presets matched and verified")
+        for item in sorted(list(added)):
+            error_list.append(f"    - Added {item_name}: {item}")
+        for item in sorted(list(removed)):
+            error_list.append(f"    - Removed {item_name}: {item}")
 
 
 def main():
