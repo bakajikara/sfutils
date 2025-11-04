@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SF2 equivalence test - verify two SF2 files are practically equivalent
+SoundFont Equivalence Test - verify two SF2/SF3 files are practically equivalent
 
 This test ignores:
 - Order of samples, instruments, presets
@@ -10,18 +10,19 @@ This test ignores:
 This test detects:
 - Differences in outward-facing (user-visible) preset names, etc.
 - Inconsistencies in references (checks correctness even if order differs)
-- Differences in audio data
+- Differences in audio data (PCM for SF2, Ogg Vorbis for SF3)
 - Differences in generator/modulator parameter values
 """
 
 import sys
 import struct
+import hashlib
 from pathlib import Path
 from collections import defaultdict
 
 
-class SF2EquivalenceChecker:
-    """Check practical equivalence of two SF2 files"""
+class SoundFontEquivalenceChecker:
+    """Check practical equivalence of two SoundFont files (SF2 or SF3)"""
 
     def __init__(self, file1_path, file2_path):
         self.file1_path = Path(file1_path)
@@ -29,10 +30,14 @@ class SF2EquivalenceChecker:
         self.errors = []
         self.warnings = []
 
+        self.sample_mapping = {}
+        self.samples1_hashes = {}
+        self.samples2_hashes = {}
+
     def check(self):
         """Run the equivalence check"""
         print("=" * 80)
-        print("SF2 Equivalence Test")
+        print("SoundFont Equivalence Test")
         print("=" * 80)
         print(f"File 1: {self.file1_path}")
         print(f"File 2: {self.file2_path}")
@@ -40,23 +45,26 @@ class SF2EquivalenceChecker:
 
         # Parse both files
         print("Parsing files...")
-        data1 = self._parse_sf2(self.file1_path)
-        data2 = self._parse_sf2(self.file2_path)
+        data1 = self._parse_sf(self.file1_path)
+        data2 = self._parse_sf(self.file2_path)
 
         if data1 is None or data2 is None:
             print("❌ Failed to parse one or both files")
             return False
 
-        print(f"  File 1: {len(data1["samples"])} samples, {len(data1["instruments"])} instruments, {len(data1["presets"])} presets")
-        print(f"  File 2: {len(data2["samples"])} samples, {len(data2["instruments"])} instruments, {len(data2["presets"])} presets")
+        print(f"  File 1: Version {data1["info"].get("version", "N/A")}, {len(data1["samples"])} samples, {len(data1["instruments"])} instruments, {len(data1["presets"])} presets")
+        print(f"  File 2: Version {data2["info"].get("version", "N/A")}, {len(data2["samples"])} samples, {len(data2["instruments"])} instruments, {len(data2["presets"])} presets")
         print()
+
+        # Determine file type from version string
+        is_sf3 = data1["info"].get("version", "2.").startswith("3")
 
         # Check each element
         print("Checking equivalence...")
         print()
 
         self._check_info(data1["info"], data2["info"])
-        self._check_samples(data1["samples"], data2["samples"], data1["smpl_data"], data2["smpl_data"], data1["sm24_data"], data2["sm24_data"])
+        self._check_samples(data1["samples"], data2["samples"], data1["smpl_data"], data2["smpl_data"], data1["sm24_data"], data2["sm24_data"], is_sf3)
         self._check_instruments(data1["instruments"], data2["instruments"], data1["samples"], data2["samples"])
         self._check_presets(data1["presets"], data2["presets"], data1["instruments"], data2["instruments"])
 
@@ -83,9 +91,11 @@ class SF2EquivalenceChecker:
             print("   (no practical differences detected)")
             return True
 
-    def _parse_sf2(self, filepath):
-        """Parse an SF2 file"""
+    def _parse_sf(self, filepath):
+        """Parse an SF2/SF3 file"""
         try:
+            # The parsing logic is largely the same for the structures we care about.
+            # The difference is in how we interpret the data, which is handled later.
             with open(filepath, "rb") as f:
                 # RIFF header
                 riff_id = f.read(4)
@@ -110,31 +120,38 @@ class SF2EquivalenceChecker:
                     "pdta_raw": {}
                 }
 
-                # Read the three main chunks
-                for _ in range(3):
+                # Read main LIST chunks
+                file_end = f.tell() + file_size - 4
+                while f.tell() < file_end:
                     chunk_id = f.read(4)
                     if len(chunk_id) < 4:
                         break
                     chunk_size = struct.unpack("<I", f.read(4))[0]
-                    list_type = f.read(4)
-                    chunk_end = f.tell() + chunk_size - 4
 
-                    if list_type == b"INFO":
-                        data["info"] = self._parse_info_chunk(f, chunk_end)
-                    elif list_type == b"sdta":
-                        data["smpl_data"], data["sm24_data"] = self._parse_sdta_chunk(f, chunk_end)
-                    elif list_type == b"pdta":
-                        data["pdta_raw"] = self._parse_pdta_chunk(f, chunk_end)
+                    if chunk_id == b"LIST":
+                        list_type = f.read(4)
+                        list_end = f.tell() + chunk_size - 4
+                        if list_type == b"INFO":
+                            data["info"] = self._parse_info_chunk(f, list_end)
+                        elif list_type == b"sdta":
+                            data["smpl_data"], data["sm24_data"] = self._parse_sdta_chunk(f, list_end)
+                        elif list_type == b"pdta":
+                            data["pdta_raw"] = self._parse_pdta_chunk(f, list_end)
+                        f.seek(list_end)
+                    else:
+                        f.seek(chunk_size, 1)
 
-                    f.seek(chunk_end)
+                    if chunk_size % 2:
+                        f.seek(1, 1)
 
                 # Structure pdta data
                 self._structure_pdta(data)
-
                 return data
 
         except Exception as e:
             self.errors.append(f"Failed to parse {filepath}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _parse_info_chunk(self, f, chunk_end):
@@ -212,7 +229,7 @@ class SF2EquivalenceChecker:
                 break
             chunk = shdr_data[i:i + 46]
             name = chunk[0:20].decode("ascii", errors="ignore").rstrip("\x00")
-            if name == "EOS":
+            if name == "EOS" or not name:
                 break
 
             values = struct.unpack("<IIIIIBbHH", chunk[20:46])
@@ -240,7 +257,7 @@ class SF2EquivalenceChecker:
             if i + 22 > len(inst_data):
                 break
             name = inst_data[i:i + 20].decode("ascii", errors="ignore").rstrip("\x00")
-            if name == "EOI":
+            if name == "EOI" or not name:
                 break
             bag_ndx = struct.unpack("<H", inst_data[i + 20:i + 22])[0]
             inst_headers.append({"name": name, "bag_ndx": bag_ndx})
@@ -314,7 +331,7 @@ class SF2EquivalenceChecker:
                 break
             chunk = phdr_data[i:i + 38]
             name = chunk[0:20].decode("ascii", errors="ignore").rstrip("\x00")
-            if name == "EOP":
+            if name == "EOP" or not name:
                 break
             preset, bank, bag_ndx = struct.unpack("<HHH", chunk[20:26])
             library, genre, morphology = struct.unpack("<III", chunk[26:38])
@@ -413,93 +430,142 @@ class SF2EquivalenceChecker:
 
         print("  ✓ INFO check complete")
 
-    def _check_samples(self, samples1, samples2, data1, data2, sm24_data1, sm24_data2):
-        """Check samples (ignore order)"""
+    def _check_samples(self, samples1, samples2, smpl_data1, smpl_data2, sm24_data1, sm24_data2, is_sf3):
+        """
+        Check sample equivalence by first matching audio data, then comparing metadata field-by-field.
+        This provides robust matching while also giving detailed error reports on mismatches.
+        """
         print("Checking samples...")
 
         if len(samples1) != len(samples2):
             self.errors.append(f"Sample count mismatch: {len(samples1)} != {len(samples2)}")
+            return
 
-        # Map samples by audio data (ignore order)
-        def extract_sample_data(sample, data, sm24_data):
-            """Extract PCM data for a sample (including sm24 if present)"""
-            start = sample["start"] * 2  # 16-bit = 2 bytes
-            end = sample["end"] * 2
-            if end > len(data):
-                end = len(data)
-            pcm16 = data[start:end]
+        def get_audio_data_and_hash(sample, smpl_data, sm24_data, is_sf3_mode):
+            """Returns the raw audio data and its MD5 hash."""
+            if is_sf3_mode:
+                audio_data = smpl_data[sample["start"]:sample["end"]]
+            else:  # SF2
+                audio_data_16 = smpl_data[sample["start"] * 2:sample["end"] * 2]
+                audio_data_24 = sm24_data[sample["start"]:sample["end"]] if sm24_data else b""
+                audio_data = audio_data_16 + audio_data_24
+            return audio_data, hashlib.md5(audio_data).hexdigest()
 
-            # Extract sm24 data if present
-            if sm24_data:
-                sm24_start = sample["start"]  # sm24 is 1 byte per sample
-                sm24_end = sample["end"]
-                if sm24_end > len(sm24_data):
-                    sm24_end = len(sm24_data)
-                sm24 = sm24_data[sm24_start:sm24_end]
-                return pcm16 + sm24  # Combine for comparison
+        # Step 1: Index all samples in file1 by their audio hash.
+        # The value is a list to handle multiple samples with identical audio data.
+        samples1_by_audio = defaultdict(list)
+        for idx, s1 in enumerate(samples1):
+            _, audio_hash = get_audio_data_and_hash(s1, smpl_data1, sm24_data1, is_sf3)
+            samples1_by_audio[audio_hash].append((idx, s1))
 
-            return pcm16
+        # Also create simple hash lookups for the instrument checker later
+        self.samples1_hashes = {idx: get_audio_data_and_hash(s, smpl_data1, sm24_data1, is_sf3)[1] for idx, s in enumerate(samples1)}
+        self.samples2_hashes = {idx: get_audio_data_and_hash(s, smpl_data2, sm24_data2, is_sf3)[1] for idx, s in enumerate(samples2)}
 
-        # Index file1 samples by PCM data
-        import hashlib
-        samples1_by_audio = {}
-        samples1_hashes = {}  # idx -> hash (used later)
+        # Step 2: Iterate through file2 samples and find a perfect match in file1.
+        matched_count = 0
+        for idx2, s2 in enumerate(samples2):
+            _, audio_hash2 = get_audio_data_and_hash(s2, smpl_data2, sm24_data2, is_sf3)
 
-        for idx, sample in enumerate(samples1):
-            pcm = extract_sample_data(sample, data1, sm24_data1)
-            # Use a hash for memory efficiency
-            pcm_hash = hashlib.md5(pcm).hexdigest()
-            samples1_by_audio[pcm_hash] = (idx, sample, pcm)
-            samples1_hashes[idx] = pcm_hash
+            found_match = False
+            if audio_hash2 in samples1_by_audio:
+                # We have candidate samples with identical audio. Now check metadata.
+                candidate_list = samples1_by_audio[audio_hash2]
 
-        # Match each sample in file2
-        matched = set()
-        sample_mapping = {}  # file2_idx -> file1_idx
-        samples2_hashes = {}  # idx -> hash (used later)
+                for i, (idx1, s1_candidate) in enumerate(candidate_list):
+                    if self._are_sample_metadata_equal(s1_candidate, s2, is_sf3):
+                        # Perfect match found!
+                        self.sample_mapping[idx2] = idx1
+                        # Remove the matched candidate so it can't be matched again
+                        candidate_list.pop(i)
+                        found_match = True
+                        matched_count += 1
+                        break  # Move to the next sample in file2
 
-        for idx2, sample2 in enumerate(samples2):
-            pcm2 = extract_sample_data(sample2, data2, sm24_data2)
-            pcm2_hash = hashlib.md5(pcm2).hexdigest()
-            samples2_hashes[idx2] = pcm2_hash
-
-            if pcm2_hash in samples1_by_audio:
-                idx1, sample1, pcm1 = samples1_by_audio[pcm2_hash]
-                matched.add(idx1)
-                sample_mapping[idx2] = idx1
-
-                # Compare metadata (excluding name)
-                if sample1["sample_rate"] != sample2["sample_rate"]:
-                    self.errors.append(f"Sample #{idx2}: sample_rate mismatch")
-                if sample1["original_key"] != sample2["original_key"]:
-                    self.errors.append(f"Sample #{idx2}: original_key mismatch")
-                if sample1["correction"] != sample2["correction"]:
-                    self.errors.append(f"Sample #{idx2}: correction mismatch")
-                if sample1["sample_type"] != sample2["sample_type"]:
-                    self.errors.append(f"Sample #{idx2}: sample_type mismatch")
-
-                # Compare loop points (relative positions within the audio data)
-                loop1_start_rel = sample1["start_loop"] - sample1["start"]
-                loop1_end_rel = sample1["end_loop"] - sample1["start"]
-                loop2_start_rel = sample2["start_loop"] - sample2["start"]
-                loop2_end_rel = sample2["end_loop"] - sample2["start"]
-
-                if loop1_start_rel != loop2_start_rel or loop1_end_rel != loop2_end_rel:
-                    self.errors.append(f"Sample #{idx2}: loop points mismatch")
+                if not found_match:
+                    # Audio matched, but no candidate had matching metadata. Report the diff.
+                    first_candidate_idx, first_candidate_s1 = samples1_by_audio[audio_hash2][0]
+                    self.errors.append(f"Sample #{idx2} has matching audio with #{first_candidate_idx}, but metadata differs:")
+                    self._report_metadata_diff(first_candidate_s1, s2, is_sf3)
 
             else:
-                self.errors.append(f"Sample #{idx2} in file2 not found in file1")
+                self.errors.append(f"Sample #{idx2} in file2 has audio data not found in file1.")
 
-        # Check for unmatched samples
-        for idx1 in range(len(samples1)):
-            if idx1 not in matched:
-                self.errors.append(f"Sample #{idx1} in file1 not found in file2")
+        # Step 3: Check if any samples from file1 were left unmatched.
+        unmatched_count = sum(len(candidates) for candidates in samples1_by_audio.values())
+        if unmatched_count > 0:
+            self.errors.append(f"{unmatched_count} samples from file1 were not found in file2.")
 
-        print(f"  ✓ {len(matched)}/{len(samples1)} samples matched")
+        if not self.errors:
+            print(f"  ✓ All {len(samples1)} samples matched successfully.")
+            # Step 4: With a reliable mapping, verify the stereo links.
+            self._verify_sample_links(samples1, samples2, self.sample_mapping)
 
-        # Save mappings and hashes (for later use)
-        self.sample_mapping = sample_mapping
-        self.samples1_hashes = samples1_hashes
-        self.samples2_hashes = samples2_hashes
+    def _get_relative_loops(self, sample, is_sf3):
+        """Returns a tuple of (start_loop_relative, end_loop_relative)."""
+        if is_sf3:
+            return sample["start_loop"], sample["end_loop"]
+        else:  # SF2
+            return sample["start_loop"] - sample["start"], sample["end_loop"] - sample["start"]
+
+    def _are_sample_metadata_equal(self, s1, s2, is_sf3):
+        """Returns True if all critical metadata fields are equal."""
+        loops1 = self._get_relative_loops(s1, is_sf3)
+        loops2 = self._get_relative_loops(s2, is_sf3)
+
+        return (s1["sample_rate"] == s2["sample_rate"] and
+                s1["original_key"] == s2["original_key"] and
+                s1["correction"] == s2["correction"] and
+                s1["sample_type"] == s2["sample_type"] and
+                loops1 == loops2)
+
+    def _report_metadata_diff(self, s1, s2, is_sf3):
+        """Adds detailed error messages for each differing metadata field."""
+        if s1["sample_rate"] != s2["sample_rate"]:
+            self.errors.append(f"    - sample_rate: {s1["sample_rate"]} (file1) vs {s2["sample_rate"]} (file2)")
+        if s1["original_key"] != s2["original_key"]:
+            self.errors.append(f"    - original_key: {s1["original_key"]} (file1) vs {s2["original_key"]} (file2)")
+        if s1["correction"] != s2["correction"]:
+            self.errors.append(f"    - correction: {s1["correction"]} (file1) vs {s2["correction"]} (file2)")
+        if s1["sample_type"] != s2["sample_type"]:
+            self.errors.append(f"    - sample_type: {s1["sample_type"]} (file1) vs {s2["sample_type"]} (file2)")
+
+        loops1 = self._get_relative_loops(s1, is_sf3)
+        loops2 = self._get_relative_loops(s2, is_sf3)
+        if loops1 != loops2:
+            self.errors.append(f"    - relative_loops: {loops1} (file1) vs {loops2} (file2)")
+
+    def _verify_sample_links(self, samples1, samples2, sample_mapping):
+        """
+        Verify that the linked partners of matched samples also match.
+        This explicitly checks the integrity of stereo pairs.
+        """
+        print("  Verifying sample links for stereo pairs...")
+        link_errors = 0
+
+        # sample_mapping is {idx2: idx1}
+        for idx2, idx1 in sample_mapping.items():
+            sample1 = samples1[idx1]
+            sample2 = samples2[idx2]
+
+            # Check if this sample is part of a stereo pair
+            is_stereo1 = sample1["sample_type"] & 6 and sample1["sample_link"] < len(samples1)
+            is_stereo2 = sample2["sample_type"] & 6 and sample2["sample_link"] < len(samples2)
+
+            # If both are stereo, check if their partners match
+            if is_stereo1 and is_stereo2:
+                linked_idx1 = sample1["sample_link"]
+                linked_idx2 = sample2["sample_link"]
+
+                # The linked partner of sample2 (linked_idx2) should map to
+                # the linked partner of sample1 (linked_idx1) in our mapping.
+                if sample_mapping.get(linked_idx2) != linked_idx1:
+                    self.errors.append(f"Sample link mismatch for pair #{idx1} vs #{idx2}. "
+                                       f"Partner {linked_idx1} does not correspond to {linked_idx2}.")
+                    link_errors += 1
+
+        if link_errors == 0:
+            print("    ✓ Sample links are consistent.")
 
     def _check_instruments(self, instruments1, instruments2, samples1, samples2):
         """Compare instruments (ignore order)"""
@@ -550,7 +616,6 @@ class SF2EquivalenceChecker:
 
         for idx2, inst2 in enumerate(instruments2):
             sig2 = inst_signature(inst2, self.samples2_hashes)
-
             if sig2 in inst1_by_sig and inst1_by_sig[sig2]:
                 idx1, inst1 = inst1_by_sig[sig2].pop(0)
                 matched.add(idx1)
@@ -558,7 +623,7 @@ class SF2EquivalenceChecker:
 
                 # Name differences are only warnings (internal names)
                 if inst1["name"] != inst2["name"]:
-                    self.warnings.append(f"Instrument name differs: \"{inst1["name"]}\" vs \"{inst2["name"]}\" (内部名称)")
+                    self.warnings.append(f"Instrument name differs: \"{inst1["name"]}\" vs \"{inst2["name"]}\" (internal names)")
 
             else:
                 self.errors.append(f"Instrument #{idx2} \"{inst2["name"]}\" in file2 not found in file1")
@@ -687,7 +752,7 @@ def main():
     file1 = sys.argv[1]
     file2 = sys.argv[2]
 
-    checker = SF2EquivalenceChecker(file1, file2)
+    checker = SoundFontEquivalenceChecker(file1, file2)
     result = checker.check()
 
     sys.exit(0 if result else 1)

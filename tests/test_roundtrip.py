@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Roundtrip Test - Verify integrity of an SF2 file
+Roundtrip Test - Verify integrity of SoundFont files
 
-Decompile → compile MuseScore_General_HQ.sf2 and confirm the binary is
-identical.
+Decompiles and recompiles SoundFont files under different conditions
+to confirm the process is reversible or produces an equivalent file.
 
-If not identical, verify practical equivalence.
-Equivalence checks ignore the following:
-- Order of samples, instruments, and presets
-- Minor differences in internal sample names and other labels
-- Differences in IDs/offsets caused by ordering
+- Test 1: MuseScore_General_HQ.sf2 (default options)
+- Test 2: MuseScore_General_HQ.sf2 (with split stereo option)
+- Test 3: MuseScore_General_HQ.sf3 (equivalence check)
 """
 
 import sys
@@ -17,11 +15,11 @@ import hashlib
 import shutil
 from pathlib import Path
 from sfutils import SoundFontCompiler, SoundFontDecompiler
-from test_equivalence import SF2EquivalenceChecker
+from test_equivalence import SoundFontEquivalenceChecker
 
 
 def calculate_md5(filepath):
-    """Calculate the MD5 hash of a file"""
+    """Calculate the MD5 hash of a file."""
     hash_md5 = hashlib.md5()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
@@ -29,134 +27,152 @@ def calculate_md5(filepath):
     return hash_md5.hexdigest()
 
 
-def calculate_sha256(filepath):
-    """Calculate the SHA256 hash of a file"""
-    hash_sha256 = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_sha256.update(chunk)
-    return hash_sha256.hexdigest()
-
-
-def main():
-    print("=" * 80)
-    print("SF2 Roundtrip Test - MuseScore_General_HQ.sf2")
+def run_test_case(test_name: str, original_file: Path, decompiler_options: dict, compiler_options: dict) -> bool:
+    """
+    Runs a single decompile-compile roundtrip test case.
+    """
+    print("\n" + "=" * 80)
+    print(f"▶️  Running Test Case: {test_name}")
     print("=" * 80)
 
-    # Set file paths
-    original_sf2 = Path("MuseScore_General_HQ.sf2")
-    temp_dir = Path("temp_roundtrip_test")
-    rebuilt_sf2 = Path("temp_rebuilt.sf2")
+    safe_test_name = "".join(c if c.isalnum() else "_" for c in test_name)
+    temp_dir = Path(f"temp_roundtrip_{safe_test_name}")
+    rebuilt_file = Path(f"temp_rebuilt_{safe_test_name}{original_file.suffix}")
 
-    # Check that the original file exists
-    if not original_sf2.exists():
-        print(f"❌ Error: {original_sf2} not found")
-        sys.exit(1)
+    if not original_file.exists():
+        print(f"❌ Error: Original file not found at \"{original_file}\"")
+        print("   Skipping this test case.")
+        return False
 
-    print(f"\n📁 Original file: {original_sf2}")
-    print(f"   Size: {original_sf2.stat().st_size:,} bytes")
+    print(f"📁 Original file: {original_file} ({original_file.stat().st_size:,} bytes)")
+    success = False
 
     try:
-        # Step 1: Decompile
         print(f"\n🔓 Step 1: Decompiling to → {temp_dir}")
         if temp_dir.exists():
             print(f"   Removing existing directory...")
             shutil.rmtree(temp_dir)
 
-        decompiler = SoundFontDecompiler(str(original_sf2), str(temp_dir))
+        decompiler = SoundFontDecompiler(str(original_file), str(temp_dir), **decompiler_options)
         decompiler.decompile()
-        print(f"   ✓ Decompile complete")
+        print("   ✓ Decompile complete")
 
-        # Show number of decompiled files
-        samples = list((temp_dir / "samples").glob("*.json"))
-        instruments = list((temp_dir / "instruments").glob("*.json"))
-        presets = list((temp_dir / "presets").glob("*.json"))
-        print(f"   - Samples: {len(samples)}")
-        print(f"   - Instruments: {len(instruments)}")
-        print(f"   - Presets: {len(presets)}")
+        print(f"\n🔒 Step 2: Compiling to → {rebuilt_file}")
+        if rebuilt_file.exists():
+            rebuilt_file.unlink()
 
-        # Step 2: Compile
-        print(f"\n🔒 Step 2: Compiling to → {rebuilt_sf2}")
-        if rebuilt_sf2.exists():
-            print(f"   Removing existing file...")
-            rebuilt_sf2.unlink()
-
-        compiler = SoundFontCompiler(str(temp_dir), str(rebuilt_sf2))
+        compiler = SoundFontCompiler(str(temp_dir), str(rebuilt_file), **compiler_options)
         compiler.compile()
-        print(f"   ✓ Compile complete")
-        print(f"   Size: {rebuilt_sf2.stat().st_size:,} bytes")
+        print("   ✓ Compile complete")
+        print(f"   Rebuilt size: {rebuilt_file.stat().st_size:,} bytes")
 
-        # Step 3: Binary exact-match check
-        print(f"\n🔬 Step 3: Binary exact-match check...")
+        print("\n🔬 Step 3: Binary exact-match check...")
+        is_identical = False
+        is_equivalent = False
 
-        original_md5 = calculate_md5(original_sf2)
-        rebuilt_md5 = calculate_md5(rebuilt_sf2)
+        original_md5 = calculate_md5(original_file)
+        rebuilt_md5 = calculate_md5(rebuilt_file)
 
-        print(f"   MD5 hashes:")
-        print(f"   - Original: {original_md5}")
-        print(f"   - Rebuilt:  {rebuilt_md5}")
+        print(f"   MD5 (Original): {original_md5}")
+        print(f"   MD5 (Rebuilt):  {rebuilt_md5}")
 
         is_identical = (original_md5 == rebuilt_md5)
 
         if is_identical:
-            print(f"   ✅ Exact match!")
-        else:
-            print(f"   ❌ Not identical at the binary level")
-
-        # Step 4: Equivalence check (only if not exactly identical)
-        is_equivalent = False
-        if not is_identical:
-            print(f"\n🔍 Step 4: Equivalence check...")
-            print(f"   (Binary exact match failed; checking for practical equivalence)")
-            print()
-
-            checker = SF2EquivalenceChecker(str(original_sf2), str(rebuilt_sf2))
-            is_equivalent = checker.check()
-        else:
-            print(f"\n✨ Binary exact match; skipping equivalence check")
+            print("   ✅ Exact binary match!")
             is_equivalent = True
+        else:
+            print("   ❌ Not identical at the binary level.")
+            print("\n🔍 Step 4: Equivalence check...")
+            checker = SoundFontEquivalenceChecker(str(original_file), str(rebuilt_file))
+            is_equivalent = checker.check()
 
-        # Final result
-        print("\n" + "=" * 80)
-        if is_identical:
-            print("🎉 Test passed! Full reversible conversion confirmed!")
-            print("   (Binary-level exact match)")
-            print("=" * 80)
-            success = True
-        elif is_equivalent:
-            print("✅ Test passed! An equivalent SF2 file was produced")
-            print("   (Different binary but practically equivalent)")
-            print("=" * 80)
+        print("\n" + "-" * 40)
+        if is_equivalent:
+            print(f"PASS: {test_name}")
             success = True
         else:
-            print("❌ Test failed: Equivalence issues detected")
-            print("=" * 80)
+            print(f"FAIL: {test_name}")
             success = False
-
-        # Ask whether to clean up
-        print(f"\n🧹 Cleanup:")
-        print(f"   Temporary files: {temp_dir}, {rebuilt_sf2}")
-
-        if success:
-            response = input("   Delete temporary files? [Y/n]: ").strip().lower()
-            if response in ["", "y", "yes"]:
-                if temp_dir.exists():
-                    shutil.rmtree(temp_dir)
-                    print(f"   ✓ Removed {temp_dir}")
-                if rebuilt_sf2.exists():
-                    rebuilt_sf2.unlink()
-                    print(f"   ✓ Removed {rebuilt_sf2}")
-            else:
-                print(f"   Keeping temporary files")
-        else:
-            print(f"   Test failed; keeping temporary files for debugging")
-
-        sys.exit(0 if success else 1)
+        print("-" * 40)
 
     except Exception as e:
-        print(f"\n❌ An error occurred: {e}")
+        print(f"\n❌ An unexpected error occurred during \"{test_name}\": {e}")
         import traceback
         traceback.print_exc()
+        success = False
+
+    finally:
+        print("\n🧹 Cleanup...")
+        if success:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+                print(f"   ✓ Removed {temp_dir}")
+            if rebuilt_file.exists():
+                rebuilt_file.unlink()
+                print(f"   ✓ Removed {rebuilt_file}")
+        else:
+            print(f"   ⚠️ Test failed; keeping temporary files for debugging:")
+            print(f"      - Decompiled files: {temp_dir}")
+            print(f"      - Rebuilt file: {rebuilt_file}")
+
+    return success
+
+
+def main():
+    """Defines and runs all roundtrip test cases."""
+
+    test_cases = [
+        {
+            "test_name": "SF2 Default Roundtrip",
+            "original_file": Path("MuseScore_General_HQ.sf2"),
+            "decompiler_options": {"split_stereo": False},
+            "compiler_options": {},
+        },
+        {
+            "test_name": "SF2 Split-Stereo Roundtrip",
+            "original_file": Path("MuseScore_General_HQ.sf2"),
+            "decompiler_options": {"split_stereo": True},
+            "compiler_options": {},
+        },
+        {
+            "test_name": "SF3 Equivalence Roundtrip",
+            "original_file": Path("MuseScore_General_HQ.sf3"),
+            "decompiler_options": {},
+            "compiler_options": {},
+        },
+    ]
+
+    results = {}
+    for case in test_cases:
+        decompiler_opts = case.get("decompiler_options", {})
+        compiler_opts = case.get("compiler_options", {})
+
+        result = run_test_case(
+            case["test_name"],
+            case["original_file"],
+            decompiler_opts,
+            compiler_opts,
+        )
+        results[case["test_name"]] = result
+
+    print("\n" + "=" * 80)
+    print("⏹️  Roundtrip Test Suite Summary")
+    print("=" * 80)
+
+    all_passed = True
+    for name, passed in results.items():
+        status = "✅ PASS" if passed else "❌ FAIL"
+        print(f"{status.ljust(8)} | {name}")
+        if not passed:
+            all_passed = False
+
+    print("-" * 80)
+    if all_passed:
+        print("🎉 All test cases passed!")
+        sys.exit(0)
+    else:
+        print("🔥 Some test cases failed.")
         sys.exit(1)
 
 
