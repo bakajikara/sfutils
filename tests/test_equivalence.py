@@ -536,6 +536,30 @@ class SoundFontEquivalenceChecker:
         if loops1 != loops2:
             self.errors.append(f"    - relative_loops: {loops1} (file1) vs {loops2} (file2)")
 
+    def _is_valid_stereo_pair(self, sample_idx, all_samples):
+        """Check if the sample at sample_idx is part of a valid stereo pair."""
+        sample = all_samples[sample_idx]
+
+        # Check if sample_type indicates stereo
+        if not (sample["sample_type"] & 6):
+            return False
+
+        # Check if sample_link points to a valid sample index
+        linked_idx = sample["sample_link"]
+        if not (0 <= linked_idx < len(all_samples)):
+            return False
+
+        # Check if the linked sample points back to this sample
+        linked_sample = all_samples[linked_idx]
+        if linked_sample["sample_link"] != sample_idx:
+            return False
+
+        # Check if sample types are complementary (left/right)
+        if (sample["sample_type"] & 6) + (linked_sample["sample_type"] & 6) != 6:
+            return False
+
+        return True
+
     def _verify_sample_links(self, samples1, samples2, sample_mapping):
         """
         Verify that the linked partners of matched samples also match.
@@ -546,26 +570,32 @@ class SoundFontEquivalenceChecker:
 
         # sample_mapping is {idx2: idx1}
         for idx2, idx1 in sample_mapping.items():
-            sample1 = samples1[idx1]
-            sample2 = samples2[idx2]
+            # Check the stereo link status of both samples
+            has_valid_link1 = self._is_valid_stereo_pair(idx1, samples1)
+            has_valid_link2 = self._is_valid_stereo_pair(idx2, samples2)
 
-            # Check if this sample is part of a stereo pair
-            is_stereo1 = sample1["sample_type"] & 6 and sample1["sample_link"] < len(samples1)
-            is_stereo2 = sample2["sample_type"] & 6 and sample2["sample_link"] < len(samples2)
+            if has_valid_link1 and has_valid_link2:
+                # Case 1: Both samples have valid links. Verify the partners match.
+                linked_idx1 = samples1[idx1]["sample_link"]
+                linked_idx2 = samples2[idx2]["sample_link"]
 
-            # If both are stereo, check if their partners match
-            if is_stereo1 and is_stereo2:
-                linked_idx1 = sample1["sample_link"]
-                linked_idx2 = sample2["sample_link"]
-
-                # The linked partner of sample2 (linked_idx2) should map to
+                # Check if the linked partner of sample2 (linked_idx2) is correctly mapped to
                 # the linked partner of sample1 (linked_idx1) in our mapping.
                 if sample_mapping.get(linked_idx2) != linked_idx1:
                     self.errors.append(f"Sample link mismatch for pair #{idx1} vs #{idx2}. "
                                        f"Partner {linked_idx1} does not correspond to {linked_idx2}.")
-                    link_errors += 1
 
-        if link_errors == 0:
+            elif has_valid_link1 != has_valid_link2:
+                # Case 2: One sample has a valid link, the other does not. Report the inconsistency.
+                state1 = "valid" if has_valid_link1 else "broken or mono"
+                state2 = "valid" if has_valid_link2 else "broken or mono"
+                self.errors.append(f"Sample link state mismatch for sample #{idx1} (file1) vs #{idx2} (file2). "
+                                   f"File 1 link is \"{state1}\", but File 2 link is \"{state2}\".")
+
+            # Case 3: Both samples have no valid links - nothing to check.
+
+        if not any("Sample link state mismatch" in e for e in self.errors) and \
+           not any("Sample link mismatch for pair" in e for e in self.errors):
             print("    ✓ Sample links are consistent.")
 
     def _check_instruments(self, instruments1, instruments2):
