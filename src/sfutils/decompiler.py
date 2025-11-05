@@ -163,8 +163,6 @@ class SoundFontDecompiler(ABC):
 
                     if is_mutual_link and is_correct_types:
                         is_pair_valid = True
-                    else:
-                        print(f"    WARNING: Invalid or broken stereo pair found for sample \"{header["name"]}\". Treating as a single channel.")
 
             if is_pair_valid:
                 # Prepare combined stereo task
@@ -199,6 +197,9 @@ class SoundFontDecompiler(ABC):
                 processed.add(idx)
                 processed.add(linked_idx)
             else:
+                if is_stereo:
+                    print(f"    WARNING: Invalid or broken stereo pair found for sample \"{header["name"]}\". Treating as a single channel.")
+
                 # Prepare mono task
                 initial_basename = sanitize_filename(header["name"])
 
@@ -218,7 +219,8 @@ class SoundFontDecompiler(ABC):
                     "idx": idx,
                     "header": header,
                     "basename": final_basename,
-                    "original_name": original_name
+                    "original_name": original_name,
+                    "is_broken_pair": bool(is_stereo)
                 })
                 processed.add(idx)
 
@@ -285,7 +287,7 @@ class SoundFontDecompiler(ABC):
         """
         Processes a single channel sample task.
         """
-        return self._write_single_channel_sample(task["idx"], task["header"], task["basename"], samples_dir, smpl_data, sm24_data)
+        return self._write_single_channel_sample(task["idx"], task["header"], task["basename"], samples_dir, smpl_data, sm24_data, task["is_broken_pair"])
 
     @abstractmethod
     def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
@@ -313,7 +315,7 @@ class SoundFontDecompiler(ABC):
             # Right channel is primary
             return linked_header, header, linked_idx, idx
 
-    def _write_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data):
+    def _write_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data, is_broken_pair=False):
         """
         Processes a mono sample, or a single channel from a stereo pair.
         """
@@ -321,11 +323,13 @@ class SoundFontDecompiler(ABC):
         sample_type = "mono"
         # Check if it's part of a stereo pair
         if header["sample_type"] & 4:
-            output_name = f"{basename}_L"
             sample_type = "stereo_left"
+            if not is_broken_pair:
+                output_name = f"{basename}_L"
         elif header["sample_type"] & 2:
-            output_name = f"{basename}_R"
             sample_type = "stereo_right"
+            if not is_broken_pair:
+                output_name = f"{basename}_R"
 
         # Write audio data
         self._write_single_channel_audio_data(output_name, header, samples_dir, smpl_data, sm24_data)
