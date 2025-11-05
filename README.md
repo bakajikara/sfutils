@@ -44,6 +44,7 @@ sfutils decompile <input_file> [output_directory] [options]
 
 **Options:**
 - `-f, --force`: Force overwrite without confirmation
+- `-s, --split-stereo`: Output stereo samples as separate left and right channel files for SF2. SF3 always splits them.
 
 If the output directory is not specified, it defaults to the input filename without extension.
 If the output directory already exists and `--force` is not specified, you will be prompted to confirm overwrite.
@@ -54,10 +55,10 @@ sfutils compile <input_directory> [output_file] [options]
 ```
 
 **Options:**
+- `-f, --force`: Force overwrite without confirmation
 - `-q, --quality QUALITY`: Ogg Vorbis quality for SF3 (0.0-1.0, default: 0.8)
   - Higher values = better quality but larger file size
   - Only affects SF3 files; ignored for SF2
-- `-f, --force`: Force overwrite without confirmation
 
 If the output file is not specified, the output filename is automatically determined from the input directory name. The file extension (`.sf2` or `.sf3`) is determined by the `version` field in `info.json`:
 - Version 2.x → `.sf2`
@@ -155,6 +156,8 @@ The format is automatically detected during decompilation and determined by the 
 - SF3 stereo samples are decompiled as separate mono files (not combined into stereo)
 - SF3 compilation from non-OGG formats requires `ffmpeg-python` library and FFmpeg to be installed
 - Only OGG files can be used for SF3 compilation without FFmpeg
+- **Order preservation**: The original order of presets, instruments, and samples in the source SoundFont file is not preserved during decompilation and recompilation. Files are processed in alphabetical/sorted order.
+- **Stereo sample naming**: When decompiling stereo samples, the tool may rename stereo pairs to create a common base name. The original individual left/right channel names may be modified during the decompilation process.
 
 ## Requirements
 - Python 3.12 or higher
