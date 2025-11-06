@@ -46,7 +46,7 @@ sfutils decompile <input_file> [output_directory] [options]
 - `-f, --force`: Force overwrite without confirmation
 - `-s, --split-stereo`: Output stereo samples as separate left and right channel files for SF2. SF3 always splits them.
 
-If the output directory is not specified, it defaults to the input filename without extension.
+If the output directory is not specified, it defaults to the input filename without extension.\
 If the output directory already exists and `--force` is not specified, you will be prompted to confirm overwrite.
 
 ### 2. Compile (Directory → SF2/SF3)
@@ -82,12 +82,14 @@ Contains metadata for the entire SoundFont.
 
 ### samples/ Directory
 Each sample is saved in FLAC format (for SF2) or OGG Vorbis format (for SF3).
-For SF2 files, stereo-linked samples are automatically detected and combined into a single stereo FLAC file with two channels.
+
+For SF2 files, stereo-linked samples are automatically detected and combined into a single stereo FLAC file with two channels.\
 For SF3 files, stereo samples are saved as separate mono OGG files (e.g., `sample_L.ogg` and `sample_R.ogg`).
+
 Each audio file has a corresponding .json file with the following information:
 
 - `sample_name`: Sample name
-- `sample_type`: "mono" or "stereo"
+- `sample_type`: "mono", "stereo_left", "stereo_right" or "stereo"
 - `start_loop`: Loop start position (relative to sample start)
 - `end_loop`: Loop end position (relative to sample start)
 - `original_key`: Original pitch (MIDI note number, 0-127)
