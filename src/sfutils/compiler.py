@@ -126,7 +126,7 @@ class SoundFontCompiler(ABC):
     def _get_default_soundfont_version(self):
         """
         Returns the default SoundFont version string for this format.
-        SF2 returns "2.01", SF3 returns "3.01".
+        SF2 returns "2.04", SF3 returns "3.01".
         """
         pass
 
@@ -873,7 +873,7 @@ class _SF2Compiler(SoundFontCompiler):
         """
         Returns the default SoundFont version for SF2 format.
         """
-        return "2.01"
+        return "2.04"
 
     def _build_sample_header_record(self, sample, idx):
         """
