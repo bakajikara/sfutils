@@ -37,6 +37,14 @@ You can edit the decompiled files and recompile them back into an SF2 or SF3 fil
 - `constants.py` - Common constant definitions (Generator IDs, sample types, etc.)
 
 ## Usage
+### 0. Installation
+Install via pip:
+```bash
+pip install git+https://github.com/bakajikara/sfutils.git
+```
+
+Also, make sure to install FFmpeg and add it to your system's PATH if you plan to compile SF3 files from non-OGG formats.
+
 ### 1. Decompile (SF2/SF3 → Directory)
 ```bash
 sfutils decompile <input_file> [output_directory] [options]
