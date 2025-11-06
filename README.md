@@ -70,7 +70,7 @@ If the output file already exists and `--force` is not specified, you will be pr
 ### info.json
 Contains metadata for the entire SoundFont.
 
-- `version`: SoundFont version (e.g., "2.01" for SF2, "3.01" for SF3)
+- `version`: SoundFont version (e.g., "2.04" for SF2, "3.01" for SF3)
 - `sound_engine`: Sound engine name
 - `bank_name`: SoundFont name
 - `creation_date`: Creation date
@@ -133,7 +133,7 @@ Filename format: `{bank:03d}-{preset:03d}_{name}.json`
 - **Stereo Handling**:
   - Decompilation: Stereo-linked samples are combined into a single stereo FLAC file
   - Compilation: Stereo FLAC files are automatically split into left/right channels
-- **Version**: Defaults to 2.01
+- **Version**: Defaults to 2.04
 
 ### SF3 (SoundFont 3)
 - **Sample Format**: Ogg Vorbis (lossy compression)
