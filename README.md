@@ -49,6 +49,14 @@ sfutils decompile <input_file> [output_directory] [options]
 If the output directory is not specified, it defaults to the input filename without extension.\
 If the output directory already exists and `--force` is not specified, you will be prompted to confirm overwrite.
 
+**Overwrite Behavior:**
+When decompiling to an existing directory, the decompiler intelligently preserves user-organized folder structures:
+- If subdirectories exist within `samples/`, `instruments/`, or `presets/`, files with matching names are overwritten in their current locations
+- New files are created in the default (root) location of each subdirectory
+- After decompilation, unwritten files with recognized extensions (`.json`, `.flac`, `.wav`, `.ogg`, `.oga`, `.mp3`) are automatically removed
+- Files outside these subdirectories or with unrecognized extensions (e.g., `README.md`, `license.txt`) are preserved
+- **Important**: Duplicate filenames within the same main subdirectory (e.g., `samples/piano/c.json` and `samples/strings/c.json`) will cause a decompilation error to prevent data loss
+
 ### 2. Compile (Directory → SF2/SF3)
 ```bash
 sfutils compile <input_directory> [output_file] [options]
@@ -65,6 +73,33 @@ If the output file is not specified, the output filename is automatically determ
 - Version 3.x → `.sf3`
 
 If the output file already exists and `--force` is not specified, you will be prompted to confirm overwrite.
+
+**Subdirectory Support:**
+The compiler supports organizing files within subdirectories:
+- Files within `samples/`, `instruments/`, and `presets/` can be organized in any subdirectory hierarchy
+- JSON and audio files can be placed in separate subdirectory structures
+
+## Version Control with Git
+This tool makes SoundFont development trackable with version control systems like Git.
+
+### Typical Workflow
+1. **Edit your SoundFont with a dedicated SF2 editor** (e.g., Polyphone, Viena)
+2. **Decompile to update your repository:**
+   ```bash
+   sfutils decompile my_soundfont.sf2 my_soundfont --force
+   cd my_soundfont
+   git diff  # Review what changed
+   git add .
+   git commit -m "Adjust piano attack envelope"
+   ```
+3. **Repeat:** Continue editing with your preferred SF2 editor and decompile to track changes
+
+### Benefits
+- **Human-readable diffs:** `git diff` shows exactly what parameters changed (e.g., "attackVolEnv: -8000 → -7200")
+- **Track changes:** See the full history of every parameter adjustment, sample addition, or preset modification
+- **File organization:** Organize decompiled samples/instruments into subdirectories by category — the structure is preserved on subsequent decompiles
+- **Collaboration:** Share your work via Git; team members can compile to SF2/SF3 and use their preferred editors
+- **Backup & recovery:** Revert to any previous version if an edit doesn't work out
 
 ## Decompiled File Details
 ### info.json

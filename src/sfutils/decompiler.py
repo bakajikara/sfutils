@@ -85,6 +85,10 @@ class SoundFontDecompiler(ABC):
         self.sample_id_to_name = {}
         self.split_stereo = split_stereo
 
+        # Track existing files in the output directory
+        self.existing_files_map = {}  # Maps basename -> full path
+        self.written_files = set()  # Track files written during this run
+
     def decompile(self):
         """
         Decompiles the file.
@@ -96,13 +100,152 @@ class SoundFontDecompiler(ABC):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Decompiling to: {self.output_dir}")
 
+        # Scan existing files in subdirectories
+        self._scan_existing_files()
+
         # Decompile each part
         self._export_bank_info()
         self._export_samples()
         self._export_instruments()
         self._export_presets()
 
+        # Clean up unwritten files
+        self._cleanup_unwritten_files()
+
         print("Decompilation complete!")
+
+    def _scan_existing_files(self):
+        """
+        Scans the output directory for existing files in samples/, instruments/, and presets/ subdirectories.
+        Creates a mapping of (subdir_name, basename) -> full path for later lookup.
+        Raises an error if duplicate filenames with the same extension are found within the same subdirectory hierarchy.
+        """
+        all_duplicates = []  # Collect all duplicates before raising error
+
+        for subdir_name in ["samples", "instruments", "presets"]:
+            subdir = self.output_dir / subdir_name
+            if subdir.exists() and subdir.is_dir():
+                # Track filenames within this subdirectory to detect duplicates
+                seen_files = {}  # Maps (filename) -> path for duplicate detection
+
+                for file_path in subdir.rglob("*"):
+                    if file_path.is_file():
+                        # Check for duplicate full filename (same name + same extension)
+                        if file_path.name in seen_files:
+                            all_duplicates.append((
+                                subdir_name,
+                                file_path.name,
+                                seen_files[file_path.name],
+                                file_path
+                            ))
+                        else:
+                            seen_files[file_path.name] = file_path
+
+                        # Store with full filename including extension
+                        key_full = (subdir_name, file_path.name)
+                        self.existing_files_map[key_full] = file_path
+
+                        # Also store with stem only (without extension) for matching
+                        key_stem = (subdir_name, file_path.stem)
+                        # Only store if not already present to avoid overwriting
+                        if key_stem not in self.existing_files_map:
+                            self.existing_files_map[key_stem] = file_path
+
+        # If duplicates were found, report all of them at once
+        if all_duplicates:
+            error_msg = "Duplicate filenames found in the output directory:\n\n"
+            for subdir_name, filename, path1, path2 in all_duplicates:
+                error_msg += f"Duplicate in {subdir_name}/: \"{filename}\"\n"
+                error_msg += f"  1. {path1.relative_to(self.output_dir)}\n"
+                error_msg += f"  2. {path2.relative_to(self.output_dir)}\n\n"
+            error_msg += "Please reorganize your files to avoid duplicate names within the same subdirectory."
+            raise ValueError(error_msg)
+
+    def _find_existing_file(self, subdir_name, basename, extension):
+        """
+        Finds an existing file in the subdirectory hierarchy.
+
+        Args:
+            subdir_name: The subdirectory name (samples, instruments, presets)
+            basename: The base filename without extension
+            extension: The file extension (e.g., ".flac", ".json")
+
+        Returns:
+            Path object if found, None otherwise
+        """
+        full_filename = f"{basename}{extension}"
+
+        # Try exact match with extension first (subdir_name + full filename)
+        key_full = (subdir_name, full_filename)
+        if key_full in self.existing_files_map:
+            return self.existing_files_map[key_full]
+
+        # Try basename match (for files with same stem but different extension)
+        key_stem = (subdir_name, basename)
+        if key_stem in self.existing_files_map:
+            existing_path = self.existing_files_map[key_stem]
+            # Verify it's in the correct subdirectory
+            if subdir_name in existing_path.parts:
+                return existing_path
+
+        return None
+
+    def _get_output_path(self, subdir_name, basename, extension):
+        """
+        Gets the output path for a file, either overwriting an existing file or creating at default location.
+
+        Args:
+            subdir_name: The subdirectory name (samples, instruments, presets)
+            basename: The base filename without extension
+            extension: The file extension (e.g., ".flac", ".json")
+
+        Returns:
+            Path object for the output file
+        """
+        existing = self._find_existing_file(subdir_name, basename, extension)
+
+        if existing:
+            # Remove extension and re-add to ensure correct extension
+            output_path = existing.parent / f"{basename}{extension}"
+            return output_path
+        else:
+            # Create at default location
+            return self.output_dir / subdir_name / f"{basename}{extension}"
+
+    def _cleanup_unwritten_files(self):
+        """
+        Removes files in samples/, instruments/, and presets/ that were not written during this decompilation.
+        Only removes files with extensions recognized by the compiler.
+        Does not remove files outside these directories or files with other extensions (e.g., README).
+        """
+        # Extensions recognized by the compiler
+        recognized_extensions = {".json", ".flac", ".wav", ".ogg", ".oga", ".mp3"}  # Keep in sync with compiler
+        removed_count = 0
+
+        for subdir_name in ["samples", "instruments", "presets"]:
+            subdir = self.output_dir / subdir_name
+            if subdir.exists() and subdir.is_dir():
+                for file_path in list(subdir.rglob("*")):
+                    if file_path.is_file() and file_path not in self.written_files:
+                        # Only remove files with recognized extensions
+                        if file_path.suffix.lower() in recognized_extensions:
+                            try:
+                                file_path.unlink()
+                                removed_count += 1
+                                print(f"  Removed: {file_path.relative_to(self.output_dir)}")
+                            except Exception as e:
+                                print(f"  Warning: Could not remove {file_path}: {e}")
+
+                # Remove empty directories
+                for dir_path in sorted(subdir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                    if dir_path.is_dir() and not any(dir_path.iterdir()):
+                        try:
+                            dir_path.rmdir()
+                        except Exception:
+                            pass
+
+        if removed_count > 0:
+            print(f"  Cleaned up {removed_count} old file(s)")
 
     def _export_bank_info(self):
         """
@@ -128,7 +271,7 @@ class SoundFontDecompiler(ABC):
         tasks = self._prepare_sample_tasks(sample_headers)
 
         # Process tasks in parallel
-        results = self._process_sample_tasks_parallel(tasks, samples_dir, smpl_data, sm24_data, sample_headers)
+        results = self._process_sample_tasks_parallel(tasks, smpl_data, sm24_data, sample_headers)
 
         # Update sample ID to name mappings
         for result in results:
@@ -226,7 +369,7 @@ class SoundFontDecompiler(ABC):
 
         return tasks
 
-    def _process_sample_tasks_parallel(self, tasks, samples_dir, smpl_data, sm24_data, sample_headers):
+    def _process_sample_tasks_parallel(self, tasks, smpl_data, sm24_data, sample_headers):
         """
         Processes sample tasks in parallel with progress display.
         """
@@ -246,7 +389,6 @@ class SoundFontDecompiler(ABC):
                 executor.submit(
                     self._process_sample_task,
                     task,
-                    samples_dir,
                     smpl_data,
                     sm24_data,
                     sample_headers
@@ -272,25 +414,25 @@ class SoundFontDecompiler(ABC):
 
         return results
 
-    def _process_sample_task(self, task, samples_dir, smpl_data, sm24_data, sample_headers):
+    def _process_sample_task(self, task, smpl_data, sm24_data, sample_headers):
         """
         Processes a sample task (single or combined).
         Returns a mapping of sample IDs to basenames.
         """
 
         if task["type"] == "single_channel":
-            return self._process_single_channel_task(task, samples_dir, smpl_data, sm24_data)
+            return self._process_single_channel_task(task, smpl_data, sm24_data)
         elif task["type"] == "combined_stereo":
-            return self._process_combined_stereo_task(task, samples_dir, smpl_data, sm24_data)
+            return self._process_combined_stereo_task(task, smpl_data, sm24_data)
 
-    def _process_single_channel_task(self, task, samples_dir, smpl_data, sm24_data):
+    def _process_single_channel_task(self, task, smpl_data, sm24_data):
         """
         Processes a single channel sample task.
         """
-        return self._write_single_channel_sample(task["idx"], task["header"], task["basename"], samples_dir, smpl_data, sm24_data, task["is_broken_pair"])
+        return self._write_single_channel_sample(task["idx"], task["header"], task["basename"], smpl_data, sm24_data, task["is_broken_pair"])
 
     @abstractmethod
-    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
+    def _process_combined_stereo_task(self, task, smpl_data, sm24_data):
         """
         Processes a combined stereo sample task.
         """
@@ -315,7 +457,7 @@ class SoundFontDecompiler(ABC):
             # Right channel is primary
             return linked_header, header, linked_idx, idx
 
-    def _write_single_channel_sample(self, idx, header, basename, samples_dir, smpl_data, sm24_data, is_broken_pair=False):
+    def _write_single_channel_sample(self, idx, header, basename, smpl_data, sm24_data, is_broken_pair=False):
         """
         Processes a mono sample, or a single channel from a stereo pair.
         """
@@ -331,18 +473,34 @@ class SoundFontDecompiler(ABC):
             if not is_broken_pair:
                 output_name = f"{basename}_R"
 
+        # Get appropriate extension for this format
+        extension = self._get_audio_extension()
+
+        # Get output path (may be existing file location)
+        audio_path = self._get_output_path("samples", output_name, extension)
+        json_path = self._get_output_path("samples", output_name, ".json")
+
         # Write audio data
-        self._write_single_channel_audio_data(output_name, header, samples_dir, smpl_data, sm24_data)
+        self._write_single_channel_audio_data(audio_path, header, smpl_data, sm24_data)
+        self.written_files.add(audio_path)
 
         # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{output_name}.json", basename, sample_type, header)
+        self._write_sample_metadata(json_path, basename, sample_type, header)
+        self.written_files.add(json_path)
 
         return {idx: basename}
 
     @abstractmethod
-    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
+    def _get_audio_extension(self):
         """
-        Writes the audio data for a single channel to a file.
+        Returns the audio file extension for this format.
+        """
+        pass
+
+    @abstractmethod
+    def _write_single_channel_audio_data(self, output_path, header, smpl_data, sm24_data):
+        """
+        Writes the audio data for a single channel to a specific path.
         """
         pass
 
@@ -379,9 +537,13 @@ class SoundFontDecompiler(ABC):
                 "name": inst["name"],
                 "zones": translated_zones
             }
-            filename = f"{sanitize_filename(inst["name"])}.json"
-            with open(instruments_dir / filename, "w", encoding="utf-8") as f:
+            filename = sanitize_filename(inst["name"])
+            output_path = self._get_output_path("instruments", filename, ".json")
+
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(inst_data, f, indent=2, ensure_ascii=False)
+            self.written_files.add(output_path)
+
         print(f"  Created: {len(inst_headers)} instrument files in instruments/")
 
     def _export_presets(self):
@@ -415,9 +577,13 @@ class SoundFontDecompiler(ABC):
                 "morphology": preset["morphology"],
                 "zones": translated_zones
             }
-            filename = f"{preset["bank"]:03d}-{preset["preset"]:03d}_{sanitize_filename(preset["name"])}.json"
-            with open(presets_dir / filename, "w", encoding="utf-8") as f:
+            filename = f"{preset["bank"]:03d}-{preset["preset"]:03d}_{sanitize_filename(preset["name"])}"
+            output_path = self._get_output_path("presets", filename, ".json")
+
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(preset_data, f, indent=2, ensure_ascii=False)
+            self.written_files.add(output_path)
+
         print(f"  Created: {len(preset_headers)} preset files in presets/")
 
     def _translate_instrument_generators(self, gen_records, sample_headers):
@@ -502,7 +668,13 @@ class _SF2Decompiler(SoundFontDecompiler):
     Decompiler for SF2 files (PCM audio).
     """
 
-    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
+    def _get_audio_extension(self):
+        """
+        Returns the audio file extension for SF2 format.
+        """
+        return ".flac"
+
+    def _process_combined_stereo_task(self, task, smpl_data, sm24_data):
         """
         Processes a combined stereo sample task.
         """
@@ -512,8 +684,8 @@ class _SF2Decompiler(SoundFontDecompiler):
 
         if self.split_stereo:
             # Split stereo into separate files
-            left_result = self._write_single_channel_sample(left_idx, left_h, basename, samples_dir, smpl_data, sm24_data)
-            right_result = self._write_single_channel_sample(right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+            left_result = self._write_single_channel_sample(left_idx, left_h, basename, smpl_data, sm24_data)
+            right_result = self._write_single_channel_sample(right_idx, right_h, basename, smpl_data, sm24_data)
             # Combine results
             combined_result = {}
             combined_result.update(left_result)
@@ -521,9 +693,9 @@ class _SF2Decompiler(SoundFontDecompiler):
             return combined_result
         else:
             # Combined stereo file
-            return self._write_combined_stereo_sample(left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+            return self._write_combined_stereo_sample(left_idx, left_h, right_idx, right_h, basename, smpl_data, sm24_data)
 
-    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
+    def _write_single_channel_audio_data(self, output_path, header, smpl_data, sm24_data):
         """
         Writes the audio data for a single channel to a FLAC file.
         """
@@ -539,24 +711,30 @@ class _SF2Decompiler(SoundFontDecompiler):
             audio_pcm = (audio_pcm.astype(np.int32) << 16) + (audio_pcm_24_lsb.astype(np.int32) << 8)
 
         # Write mono FLAC file
-        sf.write(samples_dir / f"{output_name}.flac", audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+        sf.write(output_path, audio_pcm, header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
 
-    def _write_combined_stereo_sample(self, left_idx, left_h, right_idx, right_h, basename, samples_dir, smpl_data, sm24_data):
+    def _write_combined_stereo_sample(self, left_idx, left_h, right_idx, right_h, basename, smpl_data, sm24_data):
         """
         Writes a combined stereo sample to a FLAC file.
         """
+        # Get output paths
+        audio_path = self._get_output_path("samples", basename, ".flac")
+        json_path = self._get_output_path("samples", basename, ".json")
+
         # Write audio data
-        self._write_combined_stereo_audio_data(basename, left_h, right_h, samples_dir, smpl_data, sm24_data)
+        self._write_combined_stereo_audio_data(audio_path, left_h, right_h, smpl_data, sm24_data)
+        self.written_files.add(audio_path)
 
         # Save metadata to JSON (as relative positions)
-        self._write_sample_metadata(samples_dir / f"{basename}.json", basename, "stereo", left_h)
+        self._write_sample_metadata(json_path, basename, "stereo", left_h)
+        self.written_files.add(json_path)
 
         return {
             left_idx: basename,
             right_idx: basename
         }
 
-    def _write_combined_stereo_audio_data(self, output_name, left_header, right_header, samples_dir, smpl_data, sm24_data):
+    def _write_combined_stereo_audio_data(self, output_path, left_header, right_header, smpl_data, sm24_data):
         # Extract left channel data
         left_audio_data = smpl_data[left_header["start"] * 2:left_header["end"] * 2]
         left_audio_data_24_lsb = sm24_data[left_header["start"]:left_header["end"]] if sm24_data else b""
@@ -584,7 +762,7 @@ class _SF2Decompiler(SoundFontDecompiler):
         stereo_pcm = np.column_stack((left_audio_pcm, right_audio_pcm))
 
         # Write stereo FLAC file
-        sf.write(samples_dir / f"{output_name}.flac", stereo_pcm, left_header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
+        sf.write(output_path, stereo_pcm, left_header["sample_rate"], subtype="PCM_24" if is_24bit else "PCM_16")
 
     def _write_sample_metadata(self, path, sample_name, sample_type, header):
         """
@@ -609,7 +787,13 @@ class _SF3Decompiler(SoundFontDecompiler):
     Decompiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def _process_combined_stereo_task(self, task, samples_dir, smpl_data, sm24_data):
+    def _get_audio_extension(self):
+        """
+        Returns the audio file extension for SF3 format.
+        """
+        return ".ogg"
+
+    def _process_combined_stereo_task(self, task, smpl_data, sm24_data):
         """
         Processes a combined stereo sample task.
         Always splits stereo into separate files for SF3.
@@ -619,22 +803,22 @@ class _SF3Decompiler(SoundFontDecompiler):
         left_h, right_h, left_idx, right_idx = self._get_left_right_pair(task)
 
         # Always split stereo into separate files
-        left_result = self._write_single_channel_sample(left_idx, left_h, basename, samples_dir, smpl_data, sm24_data)
-        right_result = self._write_single_channel_sample(right_idx, right_h, basename, samples_dir, smpl_data, sm24_data)
+        left_result = self._write_single_channel_sample(left_idx, left_h, basename, smpl_data, sm24_data)
+        right_result = self._write_single_channel_sample(right_idx, right_h, basename, smpl_data, sm24_data)
         # Combine results
         combined_result = {}
         combined_result.update(left_result)
         combined_result.update(right_result)
         return combined_result
 
-    def _write_single_channel_audio_data(self, output_name, header, samples_dir, smpl_data, sm24_data):
+    def _write_single_channel_audio_data(self, output_path, header, smpl_data, sm24_data):
         """
         Writes the audio data for a single channel to an Ogg Vorbis file.
         """
         ogg_data = smpl_data[header["start"]:header["end"]]
 
         # Write raw Ogg Vorbis bytes without re-encoding
-        with open(samples_dir / f"{output_name}.ogg", "wb") as f:
+        with open(output_path, "wb") as f:
             f.write(ogg_data)
 
     def _write_sample_metadata(self, path, sample_name, sample_type, header):
