@@ -153,6 +153,10 @@ class SoundFontCompiler(ABC):
 
         # Load all parts
         self._load_bank_info()
+
+        # Check for duplicates across all subdirectories before loading
+        self._check_all_duplicates()
+
         self._load_samples()
         self._fix_stereo_links()  # Fix stereo sample links after loading
         self._load_instruments()
@@ -222,6 +226,49 @@ class SoundFontCompiler(ABC):
 
         print(f"  Loaded: info.json")
 
+    def _check_all_duplicates(self):
+        """
+        Checks for duplicate filenames across all subdirectories (samples, instruments, presets).
+        Reports all duplicates at once before proceeding with compilation.
+        For samples, checks both JSON and audio files (.flac, .wav, .ogg, .oga, .mp3).
+        """
+        all_duplicates = []
+
+        for subdir_name in ["samples", "instruments", "presets"]:
+            subdir = self.input_dir / subdir_name
+            if not subdir.exists():
+                continue
+
+            # For samples, check both JSON and audio files
+            if subdir_name == "samples":
+                file_patterns = ["*.json", "*.flac", "*.wav", "*.ogg", "*.oga", "*.mp3"]
+            else:
+                file_patterns = ["*.json"]
+
+            seen_files = {}
+            for pattern in file_patterns:
+                files = sorted(subdir.rglob(pattern))
+                for file_path in files:
+                    if file_path.name in seen_files:
+                        all_duplicates.append((
+                            subdir_name,
+                            file_path.name,
+                            seen_files[file_path.name],
+                            file_path
+                        ))
+                    else:
+                        seen_files[file_path.name] = file_path
+
+        # If duplicates were found, report all of them at once
+        if all_duplicates:
+            error_msg = "Duplicate filenames found in the input directory:\n\n"
+            for subdir_name, filename, path1, path2 in all_duplicates:
+                error_msg += f"Duplicate in {subdir_name}/: \"{filename}\"\n"
+                error_msg += f"  1. {path1.relative_to(self.input_dir)}\n"
+                error_msg += f"  2. {path2.relative_to(self.input_dir)}\n\n"
+            error_msg += "Please reorganize your files to avoid duplicate names within the same subdirectory."
+            raise ValueError(error_msg)
+
     def _load_samples(self):
         """
         Loads sample metadata from the samples directory.
@@ -232,8 +279,8 @@ class SoundFontCompiler(ABC):
         if not samples_dir.exists():
             raise FileNotFoundError(f"samples directory not found in {self.input_dir}")
 
-        # Load JSON files
-        json_files = sorted(samples_dir.glob("*.json"))  # sorted for consistent order
+        # Load JSON files from samples directory and subdirectories
+        json_files = sorted(samples_dir.rglob("*.json"))
 
         total_files = len(json_files)
         print(f"  Loading {total_files} sample metadata files...")
@@ -285,7 +332,7 @@ class SoundFontCompiler(ABC):
 
         # Find the corresponding audio file path (FLAC, WAV, etc.)
         audio_path = None
-        for ext in [".flac", ".wav", ".ogg", ".oga", "mp3"]:
+        for ext in [".flac", ".wav", ".ogg", ".oga", "mp3"]:  # Supported audio formats; keep in sync with decompiler _cleanup_unwritten_files
             candidate = json_path.with_suffix(ext)
             if candidate.exists():
                 audio_path = candidate
@@ -411,7 +458,7 @@ class SoundFontCompiler(ABC):
         if not instruments_dir.exists():
             raise FileNotFoundError(f"instruments directory not found in {self.input_dir}")
 
-        json_files = sorted(instruments_dir.glob("*.json"))
+        json_files = sorted(instruments_dir.rglob("*.json"))
 
         # Process in parallel with progress display, preserving order
         with ThreadPoolExecutor() as executor:
@@ -447,7 +494,7 @@ class SoundFontCompiler(ABC):
         if not presets_dir.exists():
             raise FileNotFoundError(f"presets directory not found in {self.input_dir}")
 
-        json_files = sorted(presets_dir.glob("*.json"))
+        json_files = sorted(presets_dir.rglob("*.json"))
 
         # Process in parallel with progress display, preserving order
         with ThreadPoolExecutor() as executor:
