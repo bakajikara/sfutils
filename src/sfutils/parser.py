@@ -15,6 +15,21 @@ import struct
 from .riff import read_chunk_header
 
 
+def _truncate_at_null(s):
+    """
+    Truncates a string at the first null character.
+
+    Args:
+        s: The string to truncate.
+
+    Returns:
+        The truncated string, or the original if no null character is found.
+    """
+    if "\0" in s:
+        return s[:s.index("\0")]
+    return s
+
+
 class SoundFontParser:
     """
     A parser for SoundFont files.
@@ -140,8 +155,8 @@ class SoundFontParser:
             major, minor = struct.unpack("<HH", data)
             self.info_data["version"] = f"{major}.{minor:02d}"
         else:
-            key = sub_id.decode("ascii", errors="ignore").rstrip("\x00")
-            value = data.decode("ascii", errors="ignore").rstrip("\x00")
+            key = _truncate_at_null(sub_id.decode("ascii", errors="ignore"))
+            value = _truncate_at_null(data.decode("ascii", errors="ignore"))
             if key == "isng":
                 self.info_data["sound_engine"] = value
             elif key == "INAM":
@@ -235,7 +250,7 @@ class SoundFontParser:
         records = self._get_pdta_records("phdr", 38, b"EOP")
         headers = []
         for r in records:
-            name = r[0:20].decode("ascii", errors="ignore").rstrip("\x00")
+            name = _truncate_at_null(r[0:20].decode("ascii", errors="ignore"))
             values = struct.unpack("<HHHIII", r[20:38])
             headers.append({
                 "name": name,
@@ -260,7 +275,7 @@ class SoundFontParser:
         records = self._get_pdta_records("inst", 22, b"EOI")
         headers = []
         for r in records:
-            name = r[0:20].decode("ascii", errors="ignore").rstrip("\x00")
+            name = _truncate_at_null(r[0:20].decode("ascii", errors="ignore"))
             bag_ndx = struct.unpack("<H", r[20:22])[0]
             headers.append({"name": name, "bag_ndx": bag_ndx})
         self._instrument_headers = headers
@@ -277,7 +292,7 @@ class SoundFontParser:
         records = self._get_pdta_records("shdr", 46, b"EOS")
         headers = []
         for r in records:
-            name = r[0:20].decode("ascii", errors="ignore").rstrip("\x00")
+            name = _truncate_at_null(r[0:20].decode("ascii", errors="ignore"))
             values = struct.unpack("<IIIIIBbHH", r[20:46])
             headers.append({
                 "name": name,

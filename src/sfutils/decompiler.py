@@ -47,9 +47,10 @@ def sanitize_filename(name):
         The sanitized filename.
     """
     invalid_chars = "<>:\"/\\|?*"
-    for char in invalid_chars:
-        name = name.replace(char, "_")
-    return name.strip()
+    return "".join(
+        char if ord(char) >= 32 and char not in invalid_chars else "_"
+        for char in name
+    ).strip()
 
 
 class SoundFontDecompiler(ABC):
