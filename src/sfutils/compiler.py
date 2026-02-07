@@ -57,7 +57,7 @@ class SoundFontCompiler(ABC):
     Compiles a SoundFont file from an expanded directory structure.
     """
 
-    def __new__(cls, input_dir, output_sf, quality=None):
+    def __new__(cls, input_dir, output_sf, quality=None, gain=None):
         """
         Factory method to create a SoundFontCompiler instance.
 
@@ -65,6 +65,7 @@ class SoundFontCompiler(ABC):
             input_dir: The input directory path.
             output_sf: The output SoundFont file path.
             quality: Ogg Vorbis quality (0.0-1.0, only for SF3). Default is 0.8.
+            gain: Gain in dB to apply to samples (only for SF3). Default is 0.0.
         """
         # Determine subclass based on output file extension
         ext = Path(output_sf).suffix.lower()
@@ -75,7 +76,7 @@ class SoundFontCompiler(ABC):
 
         return instance
 
-    def __init__(self, input_dir, output_sf, quality=None):
+    def __init__(self, input_dir, output_sf, quality=None, gain=None):
         """
         Initializes the SoundFont Compiler.
 
@@ -83,6 +84,7 @@ class SoundFontCompiler(ABC):
             input_dir: The input directory path.
             output_sf: The output SoundFont file path.
             quality: Ogg Vorbis quality (0.0-1.0, only for SF3). Default is 0.8.
+            gain: Gain in dB to apply to samples (only for SF3). Default is 0.0.
         """
         self.input_dir = Path(input_dir)
         self.output_sf = output_sf
@@ -1028,7 +1030,7 @@ class _SF3Compiler(SoundFontCompiler):
     Compiler for SF3 files (Ogg Vorbis audio).
     """
 
-    def __init__(self, input_dir, output_sf, quality=None):
+    def __init__(self, input_dir, output_sf, quality=None, gain=None):
         """
         Initializes the SF3 Compiler.
 
@@ -1036,8 +1038,9 @@ class _SF3Compiler(SoundFontCompiler):
             input_dir: The input directory path.
             output_sf: The output SoundFont file path.
             quality: Ogg Vorbis quality (0.0-1.0). Default is 0.8.
+            gain: Gain in dB to apply to samples. Default is 0.0.
         """
-        super().__init__(input_dir, output_sf, quality)
+        super().__init__(input_dir, output_sf, quality, gain)
         # Ogg Vorbis quality setting (0.0 to 1.0)
         if quality is not None:
             if not 0.0 <= quality <= 1.0:
@@ -1045,6 +1048,12 @@ class _SF3Compiler(SoundFontCompiler):
             self.ogg_quality = quality
         else:
             self.ogg_quality = 0.8
+
+        # Gain setting (in dB)
+        if gain is not None:
+            self.gain_db = gain
+        else:
+            self.gain_db = 0.0
 
     def _get_sample_padding_bytes(self):
         """
@@ -1194,6 +1203,13 @@ class _SF3Compiler(SoundFontCompiler):
         elif channel == "right":
             if len(data.shape) == 2:
                 data = data[:, 1]
+
+        # Apply gain if specified (convert dB to linear scale)
+        if self.gain_db != 0.0:
+            # dB to linear: 10^(dB/20)
+            import numpy as np
+            gain_factor = np.power(10.0, self.gain_db / 20.0)
+            data = data * gain_factor
 
         num_samples = len(data)
 

@@ -75,6 +75,10 @@ sfutils compile <input_directory> [output_file] [options]
 - `-q, --quality QUALITY`: Ogg Vorbis quality for SF3 (0.0-1.0, default: 0.8)
   - Higher values = better quality but larger file size
   - Only affects SF3 files; ignored for SF2
+- `-g, --gain DB`: Gain in dB to apply to samples for SF3 (default: 0.0)
+  - Use negative values to reduce volume (e.g., `-g -1` for 1 dB reduction)
+  - Useful to prevent peak clipping during Ogg Vorbis encoding
+  - Only affects SF3 files; ignored for SF2
 
 If the output file is not specified, the output filename is automatically determined from the input directory name. The file extension (`.sf2` or `.sf3`) is determined by the `version` field in `info.json`:
 - Version 2.x → `.sf2`
@@ -190,6 +194,9 @@ Filename format: `{bank:03d}-{preset:03d}_{name}.json`
   - Quality can be controlled with `--quality` option (0.0-1.0, default: 0.8)
     - 0.0 = lowest quality (smallest file)
     - 1.0 = highest quality (largest file)
+  - Sample gain can be controlled with `--gain` option (in dB, default: 0.0)
+    - Use negative values to prevent peak clipping during Ogg Vorbis encoding
+    - Example: `--gain -1` reduces volume by 1 dB
 - **Stereo Handling**:
   - Decompilation: Stereo samples are saved as separate mono OGG files (`_L.ogg` and `_R.ogg`)
   - Compilation: Mono samples are used as-is
