@@ -35,6 +35,7 @@ def _build_root_parser():
     c_compile.add_argument("output_file", nargs="?", help="Output SoundFont file path (default: <input_dir_name>.sf2 or .sf3 based on info.json)")
     c_compile.add_argument("-f", "--force", action="store_true", help="Force overwrite without confirmation")
     c_compile.add_argument("-q", "--quality", type=float, metavar="QUALITY", help="Ogg Vorbis quality for SF3 (0.0-1.0, default: 0.8)")
+    c_compile.add_argument("-g", "--gain", type=float, metavar="DB", help="Gain in dB to apply to samples for SF3 (e.g., -1 for 1dB reduction, default: 0.0)")
 
     c_decompile = sub.add_parser("decompile", help="Decompile a SoundFont file into a directory")
     c_decompile.add_argument("input_file", help="Input SoundFont file path")
@@ -94,7 +95,14 @@ def main(argv=None):
                 if out.suffix.lower() != ".sf3":
                     print("Warning: --quality option only affects SF3 files. This will be ignored for SF2.")
 
-            compiler = SoundFontCompiler(inp, str(out), quality=quality)
+            # Validate gain parameter if provided
+            gain = args.gain
+            if gain is not None:
+                # Check if output is SF3
+                if out.suffix.lower() != ".sf3":
+                    print("Warning: --gain option only affects SF3 files. This will be ignored for SF2.")
+
+            compiler = SoundFontCompiler(inp, str(out), quality=quality, gain=gain)
             compiler.compile()
 
         elif args.command == "decompile":
