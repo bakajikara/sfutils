@@ -769,11 +769,29 @@ class _SF2Decompiler(SoundFontDecompiler):
         Writes sample metadata to a JSON file.
         Note: start/end are omitted as they will be calculated during compilation.
         """
+        # Calculate relative loop positions
+        sample_length = header["end"] - header["start"]
+        rel_start_loop = header["start_loop"] - header["start"]
+        rel_end_loop = header["end_loop"] - header["start"]
+
+        # Validate loop points: they must be within [0, sample_length] and start_loop <= end_loop
+        # If invalid (negative, too large, or reversed), reset to 0
+        if rel_start_loop < 0 or rel_start_loop > sample_length:
+            print(f"  Warning: Invalid loop points in sample '{sample_name}' (start_loop={rel_start_loop}, sample_length={sample_length}). Resetting to 0.")
+            rel_start_loop = 0
+        if rel_end_loop < 0 or rel_end_loop > sample_length:
+            print(f"  Warning: Invalid loop points in sample '{sample_name}' (end_loop={rel_end_loop}, sample_length={sample_length}). Resetting to 0.")
+            rel_end_loop = 0
+        if rel_start_loop > rel_end_loop:
+            print(f"  Warning: Invalid loop points in sample '{sample_name}' (start_loop > end_loop). Resetting to 0.")
+            rel_start_loop = 0
+            rel_end_loop = 0
+
         metadata = {
             "sample_name": sample_name,
             "sample_type": sample_type,
-            "start_loop": header["start_loop"] - header["start"],
-            "end_loop": header["end_loop"] - header["start"],
+            "start_loop": rel_start_loop,
+            "end_loop": rel_end_loop,
             "original_key": header["original_key"],
             "correction": header["correction"]
         }
