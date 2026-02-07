@@ -6,6 +6,7 @@ This test ignores:
 - Order of samples, instruments, presets
 - Minor differences in internal sample/instrument names
 - Differences in IDs/offsets due to ordering
+- Invalid loop points in SF2 files (treated as no loop for comparison)
 
 This test detects:
 - Differences in outward-facing (user-visible) preset names, etc.
@@ -503,11 +504,35 @@ class SoundFontEquivalenceChecker:
             self._verify_sample_links(samples1, samples2, self.sample_mapping)
 
     def _get_relative_loops(self, sample, is_sf3):
-        """Returns a tuple of (start_loop_relative, end_loop_relative)."""
+        """
+        Returns a tuple of (start_loop_relative, end_loop_relative).
+        For SF2 files, normalizes invalid loop points individually for comparison purposes.
+        """
         if is_sf3:
-            return sample["start_loop"], sample["end_loop"]
+            # SF3: use loop points as-is (relative to sample start)
+            return (sample["start_loop"], sample["end_loop"])
         else:  # SF2
-            return sample["start_loop"] - sample["start"], sample["end_loop"] - sample["start"]
+            # SF2: convert to relative positions
+            start_loop = sample["start_loop"] - sample["start"]
+            end_loop = sample["end_loop"] - sample["start"]
+
+            # Normalize invalid loop points individually for SF2
+            sample_length = sample["end"] - sample["start"]
+
+            # Check and correct start_loop
+            if start_loop < 0 or start_loop > sample_length:
+                start_loop = 0
+
+            # Check and correct end_loop
+            if end_loop < 0 or end_loop > sample_length:
+                end_loop = 0
+
+            # If start > end, both are invalid - reset both
+            if start_loop > end_loop:
+                start_loop = 0
+                end_loop = 0
+
+            return (start_loop, end_loop)
 
     def _are_sample_metadata_equal(self, s1, s2, is_sf3):
         """Returns True if all critical metadata fields are equal."""

@@ -1019,8 +1019,31 @@ class _SF2Compiler(SoundFontCompiler):
         # Use absolute positions calculated from current offset
         sample["_absolute_start"] = current_offset
         sample["_absolute_end"] = current_offset + num_samples
-        sample["_absolute_start_loop"] = current_offset + sample["start_loop"]
-        sample["_absolute_end_loop"] = current_offset + sample["end_loop"]
+
+        # Validate loop positions against sample length
+        start_loop = sample["start_loop"]
+        end_loop = sample["end_loop"]
+
+        # Check if loop points are within the sample range and start_loop <= end_loop
+        if start_loop < 0 or start_loop > num_samples:
+            # Invalid start loop point
+            sample_name = sample.get("sample_name", "unknown")
+            print(f"  Warning: Invalid loop point in sample '{sample_name}' (start_loop={start_loop}, sample_length={num_samples}). Resetting to 0.")
+            start_loop = 0
+        if end_loop < 0 or end_loop > num_samples:
+            # Invalid end loop point
+            sample_name = sample.get("sample_name", "unknown")
+            print(f"  Warning: Invalid loop point in sample '{sample_name}' (end_loop={end_loop}, sample_length={num_samples}). Resetting to 0.")
+            end_loop = 0
+        if start_loop > end_loop:
+            # Reversed loop points
+            sample_name = sample.get("sample_name", "unknown")
+            print(f"  Warning: Reversed loop points in sample '{sample_name}' (start_loop={start_loop} > end_loop={end_loop}). Resetting to 0.")
+            start_loop = 0
+            end_loop = 0
+
+        sample["_absolute_start_loop"] = current_offset + start_loop
+        sample["_absolute_end_loop"] = current_offset + end_loop
 
 
 class _SF3Compiler(SoundFontCompiler):
